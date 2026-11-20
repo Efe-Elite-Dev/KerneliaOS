@@ -146,7 +146,7 @@ static void dc(i32 x,i32 y,char ch,u32 fg,u32 bg,i32 sc){
     const u8 *g=F8[(u8)ch]; 
     for(i32 row=0;row<8;row++) 
         for(i32 col=0;col<8;col++) 
-            if(g[row]&(1<<(7-col))) 
+            if(g[row]&(1<<col)) /* font8x8: bit0 = en sol piksel */
                 fr(x+col*sc,y+row*sc,sc,sc,fg); 
 }
 static void ds(i32 x,i32 y,const char*s,u32 fg,u32 bg,i32 sc){ while(*s){ if(*s=='\n'){x=0;y+=8*sc+2;} else{dc(x,y,*s,fg,bg,sc);x+=8*sc;} s++; } }
@@ -199,13 +199,8 @@ static u8 kbd_poll(void){
     char c=SCMAP[sc]; if(!c) return 0; 
     
     if(c == 's' || c == 'S') { SPOTLIGHT_OPEN = !SPOTLIGHT_OPEN; return 0; }
-    if(c == 'k' || c == 'K' || c == 'l' || c == 'L' || c == 'f' || c == 'F') { 
-        FLIP_MODE = (FLIP_MODE + 1) % 4; 
-        AI_MESSAGE_TIMER = 150; 
-        return 0; 
-    }
-    
-    return (u8)c; 
+    /* Harf tuslari ekrani cevirmez; yon ayari Ekran Yoneticisi'nden yapilir */
+    return (u8)c;
 }
 
 static i32 MX=512, MY=384, MLB=0, MRB=0, PMLB=0;
@@ -288,6 +283,11 @@ static void load_sub_dir(void) {
     fat32_file_count = 2;
 }
 
+static int has_prefix(const char *s, const char *p) {
+    while(*p) { if(*s != *p) return 0; s++; p++; }
+    return 1;
+}
+
 static void DRAW_WINDOW(i32 x, i32 y, i32 w, i32 h, const char* title, u32 b_col) {
     if(!DRAW_GLASS) fr(x+8, y+8, w, h, SHADOW); 
     DRAW_GLASS = 1; rr(x, y, w, h, 12, b_col); DRAW_GLASS = 0; 
@@ -295,12 +295,12 @@ static void DRAW_WINDOW(i32 x, i32 y, i32 w, i32 h, const char* title, u32 b_col
     dsc(x, y+15, w, title, CTXT, 0, 1); 
     circ(x+20, y+17, 6, CRD); circ(x+40, y+17, 6, MAC_YEL); circ(x+60, y+17, 6, CGN);     
     if(CLK(x+14, y+11, 12, 12)) {
-        if (is_ext(title, "DOSYA")) FO = 0;
-        if (is_ext(title, "TERMINAL")) TERM_OPEN = 0;
-        if (is_ext(title, "SISTEM")) SYS_OPEN = 0;
-        if (is_ext(title, "YONETICISI")) TASKMGR_OPEN = 0;
-        if (is_ext(title, "EKRAN")) DISP_OPEN = 0;
-        if (is_ext(title, "WINDAI")) AI_OPEN = 0;
+        if (has_prefix(title, "DOSYA")) FO = 0;
+        if (has_prefix(title, "WIND-TERM")) TERM_OPEN = 0;
+        if (has_prefix(title, "SISTEM")) SYS_OPEN = 0;
+        if (has_prefix(title, "GOREV")) TASKMGR_OPEN = 0;
+        if (has_prefix(title, "EKRAN")) DISP_OPEN = 0;
+        if (has_prefix(title, "WINDAI")) AI_OPEN = 0;
     }
 }
 
@@ -542,7 +542,14 @@ void kernel_main(multiboot_info_t *mbi){
     PITCH = mbi->framebuffer_pitch; 
     if(PITCH == 0) PITCH = SW * BPP; 
 
-    if(!FB || SW==0){ FB=(volatile u8*)0xFD000000u; SW=1024; SH=768; PITCH=1024*4; BPP=4; }
+    /* Dogrulanmamis bellek adresine yazma yok: lineer grafik modu yoksa metin modunda hata goster */
+    if(!(mbi->flags & (1u<<12)) || mbi->framebuffer_type != 1 || !FB || SW==0 || (BPP!=2 && BPP!=3 && BPP!=4)) {
+        volatile u16 *vga = (volatile u16*)0xB8000;
+        const char *msg = "WINDOS: LINEER GRAFIK MODU ALINAMADI (gfxpayload kontrol et)";
+        for(u32 i=0;i<80*25;i++) vga[i] = 0x0720;
+        for(u32 i=0; msg[i] && i<80; i++) vga[i] = (u16)(0x0C00 | (u8)msg[i]);
+        while(1) __asm__ volatile("cli; hlt");
+    }
     if(SW > MAX_SW) SW = MAX_SW; if(SH > MAX_SH) SH = MAX_SH;
 
     u32 flags = *((u32*)((u8*)mbi + 0));

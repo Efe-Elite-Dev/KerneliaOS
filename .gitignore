@@ -1,0 +1,13 @@
+# derleme ciktilari
+*.o
+*.bin
+*.iso
+kernel.o
+boot.o
+iso/
+isodir/
+windos.iso
+WindOS-Quantum.iso
+# buyuk/yerel binary dosyalar
+*.exe
+build_output.log
