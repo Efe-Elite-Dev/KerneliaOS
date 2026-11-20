@@ -38,10 +38,10 @@ jobs:
       run: nasm -f elf32 boot.asm -o boot.o
 
     - name: 🧠 Çekirdeği Derle (kernel.c)
-      run: gcc -m32 -ffreestanding -fno-builtin -fno-stack-protector -O2 -Wall -c kernel.c -o kernel.o
+      run: gcc -m32 -ffreestanding -fno-builtin -fno-stack-protector -fno-pie -O2 -Wall -c kernel.c -o kernel.o
 
     - name: 🔗 Sistemi Bağla (Linker)
-      run: ld -m elf_i386 -T linker.ld boot.o kernel.o -o kernel.bin
+      run: ld -m elf_i386 -z noexecstack -T linker.ld boot.o kernel.o -o kernel.bin
 
     - name: 💿 Önyüklenebilir ISO Dosyası Oluştur (VirtualBox İçin)
       run: |

@@ -363,10 +363,10 @@ static void START_MENU(void) {
     rr(sm_x + 50, sm_y + 70, 60, 60, 12, WIN_BLUE); ds(sm_x + 55, sm_y + 140, "DOSYALAR", CTXT, 0, 1);
     if(CLK(sm_x + 50, sm_y + 70, 60, 60)) { FO = 1; START_MENU_OPEN = 0; }
     
-    rr(sm_x + 170, sm_y + 70, 60, 60, LIN_ORG); ds(sm_x + 175, sm_y + 140, "TERMINAL", CTXT, 0, 1);
+    rr(sm_x + 170, sm_y + 70, 60, 60, 12, LIN_ORG); ds(sm_x + 175, sm_y + 140, "TERMINAL", CTXT, 0, 1);
     if(CLK(sm_x + 170, sm_y + 70, 60, 60)) { TERM_OPEN = 1; START_MENU_OPEN = 0; }
 
-    rr(sm_x + 290, sm_y + 70, 60, 60, CRD); ds(sm_x + 290, sm_y + 140, "GOREV YON", CTXT, 0, 1);
+    rr(sm_x + 290, sm_y + 70, 60, 60, 12, CRD); ds(sm_x + 290, sm_y + 140, "GOREV YON", CTXT, 0, 1);
     if(CLK(sm_x + 290, sm_y + 70, 60, 60)) { TASKMGR_OPEN = 1; START_MENU_OPEN = 0; }
     
     fr(sm_x + 20, sm_y + 430, sm_w - 40, 1, PAN_BD);

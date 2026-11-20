@@ -4,10 +4,10 @@ echo "[1] boot.asm derleniyor..."
 nasm -f elf32 boot.asm -o boot.o
 
 echo "[2] kernel.c derleniyor..."
-gcc -m32 -ffreestanding -fno-builtin -fno-stack-protector -O2 -Wall -c kernel.c -o kernel.o
+gcc -m32 -ffreestanding -fno-builtin -fno-stack-protector -fno-pie -O2 -Wall -c kernel.c -o kernel.o
 
 echo "[3] Linkleniyor..."
-ld -m elf_i386 -T linker.ld boot.o kernel.o -o kernel.bin
+ld -m elf_i386 -z noexecstack -T linker.ld boot.o kernel.o -o kernel.bin
 
 echo "[4] ISO yapısı oluşturuluyor..."
 mkdir -p iso/boot/grub
