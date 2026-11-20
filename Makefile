@@ -1,26 +1,33 @@
-#include "mouse.h"
-#include "io.h"
+# WindOS - build (build.sh ve CI ile ayni adimlar)
+#   make        -> kernel.bin
+#   make iso    -> windos.iso (grub-mkrescue gerekir)
+#   make clean
 
-static int mouse_x = 400, mouse_y = 300;
+CC      = gcc
+AS      = nasm
+LD      = ld
+CFLAGS  = -m32 -ffreestanding -fno-builtin -fno-stack-protector -fno-pie -O2 -Wall
+LDFLAGS = -m elf_i386 -z noexecstack -T linker.ld
 
-void init_mouse() {
-    outb(0x64, 0xA8); // Mouse'u aktif et
-    // Burada gerekli komutları göndererek mouse'u stream moduna alabilirsin
-}
+all: kernel.bin
 
-void mouse_handler() {
-    uint8_t status = inb(0x64);
-    if (!(status & 0x01)) return;
+boot.o: boot.asm
+	$(AS) -f elf32 boot.asm -o boot.o
 
-    int8_t x_move = (int8_t)inb(0x60);
-    int8_t y_move = (int8_t)inb(0x60);
+kernel.o: kernel.c $(wildcard *.h)
+	$(CC) $(CFLAGS) -c kernel.c -o kernel.o
 
-    mouse_x += x_move;
-    mouse_y -= y_move; // Ekran koordinatları ters olduğu için çıkarıyoruz
+kernel.bin: boot.o kernel.o linker.ld
+	$(LD) $(LDFLAGS) boot.o kernel.o -o kernel.bin
 
-    // Sınırları kontrol et
-    if (mouse_x < 0) mouse_x = 0;
-    if (mouse_y < 0) mouse_y = 0;
+iso: kernel.bin grub.cfg
+	mkdir -p iso/boot/grub
+	cp kernel.bin iso/boot/kernel.bin
+	cp grub.cfg iso/boot/grub/grub.cfg
+	grub-mkrescue -o windos.iso iso
+	rm -rf iso
 
-    update_cursor_position(mouse_x, mouse_y);
-}
+clean:
+	rm -rf boot.o kernel.o kernel.bin iso windos.iso
+
+.PHONY: all iso clean
