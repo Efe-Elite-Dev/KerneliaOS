@@ -25,8 +25,8 @@ Sistem, sıradan bir hobi projesi olmaktan çıkıp; kendi dosya sistemine, evre
 WindOS, Freestanding ortamında GCC ile derlenmek üzere tasarlanmıştır.
 
 Bash
-gcc -m32 -ffreestanding -fno-builtin -fno-stack-protector -O2 -Wall -c kernel.c -o kernel.o
-ld -m elf_i386 -T linker.ld boot.o kernel.o -o kernel.bin
+make            # kernel.bin uretir
+make iso        # windos.iso uretir (grub-mkrescue gerekir)
 Not: En iyi görüntü deneyimi için QEMU kullanılması tavsiye edilir. Görüntüde terslik yaşarsanız sistem içindeyken F tuşuna basarak ekranı senkronize edebilirsiniz.
 
 🗺️ Yol Haritası (Roadmap)
@@ -62,8 +62,8 @@ It has evolved from a simple hobby project into a fully-fledged ecosystem featur
 WindOS is designed to be compiled with GCC in a freestanding environment.
 
 Bash
-gcc -m32 -ffreestanding -fno-builtin -fno-stack-protector -O2 -Wall -c kernel.c -o kernel.o
-ld -m elf_i386 -T linker.ld boot.o kernel.o -o kernel.bin
+make            # kernel.bin uretir
+make iso        # windos.iso uretir (grub-mkrescue gerekir)
 Note: QEMU is highly recommended for the best visual experience. If you experience screen mirroring/flipping, simply press the F key while the OS is running to synchronize the display.
 
 🗺️ Roadmap

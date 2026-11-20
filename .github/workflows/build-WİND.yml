@@ -20,19 +20,12 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y nasm gcc-multilib mtools xorriso grub-pc-bin grub-common
 
-    - name: 🛡️ Anti-Skew ve Font Kalkanı Testi (Yazılar Çarpılmış mı?)
+    - name: 🛡️ Font ve multiboot doğrulaması
       run: |
-        echo "Ekran çarpılması ve yazı silinmesi güvenlik kontrolleri yapılıyor..."
-        
-        # Kernel dosyasındaki güvenlik önlemlerini kontrol ediyoruz
-        if grep -q "BPP == 3" kernel.c && grep -q "ch >= 'a' && ch <= 'z'" kernel.c; then
-          echo "✅ BAŞARILI: Anti-Skew (Çarpılma Önleyici) motoru ve Font kalkanı yerinde duruyor."
-          echo "Yazılar ÇARPILMAMIŞ ve SİLİNMEMİŞ. Derleme işlemine geçiliyor..."
-        else
-          echo "❌ HATA: Güvenlik kalkanları eksik! Yazılar çarpılabilir veya silinebilir!"
-          echo "Lütfen kernel.c dosyasındaki VESA motorunu ve Font düzeltmesini kontrol edin."
-          exit 1 # Kalkan yoksa Workflow'u acımasızca durdurur!
-        fi
+        # Metin aramasi yerine: font bit sirasi ve kernel'in grafik dogrulamasi gercekten var mi?
+        grep -q "1<<col" kernel.c || { echo "HATA: font bit sirasi (LSB-solda) bulunamadi"; exit 1; }
+        grep -q "framebuffer_type != 1" kernel.c || { echo "HATA: framebuffer tipi dogrulamasi yok"; exit 1; }
+        echo "OK: font ve framebuffer dogrulamalari mevcut"
 
     - name: ⚙️ Bootloader'ı Derle (boot.asm)
       run: nasm -f elf32 boot.asm -o boot.o
@@ -42,6 +35,9 @@ jobs:
 
     - name: 🔗 Sistemi Bağla (Linker)
       run: ld -m elf_i386 -z noexecstack -T linker.ld boot.o kernel.o -o kernel.bin
+
+    - name: ✅ Multiboot başlığını doğrula
+      run: grub-file --is-x86-multiboot kernel.bin && echo "OK: multiboot 1 başlığı geçerli"
 
     - name: 💿 Önyüklenebilir ISO Dosyası Oluştur (VirtualBox İçin)
       run: |
