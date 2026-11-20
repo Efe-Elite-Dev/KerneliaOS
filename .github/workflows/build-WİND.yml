@@ -37,7 +37,7 @@ jobs:
       run: ld -m elf_i386 -z noexecstack -T linker.ld boot.o kernel.o -o kernel.bin
 
     - name: ✅ Multiboot başlığını doğrula
-      run: grub-file --is-x86-multiboot kernel.bin && echo "OK: multiboot 1 başlığı geçerli"
+      run: grub-file --is-x86-multiboot kernel.bin
 
     - name: 💿 Önyüklenebilir ISO Dosyası Oluştur (VirtualBox İçin)
       run: |
