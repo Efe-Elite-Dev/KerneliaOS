@@ -12,8 +12,16 @@ align 4
     dd MBOOT_MAGIC
     dd MBOOT_FLAGS
     dd MBOOT_CHECKSUM
-    ; bit16 temiz: adres alanları yok, video alanları hemen ardından gelir.
-    ; ---- Video modu isteği (Multiboot 1, bit2) ----
+    ; ---- Adres alanları: bit16=0 olsa da GRUB başlığı bu sabit yapıyla okur.
+    ; Video alanları (aşağıda) bu yüzden +32 konumunda olmalı; bu 5 dword
+    ; kaldırılırsa GRUB video isteğini .text içindeki rastgele baytlardan okur
+    ; ve kernel hiç başlamaz (QEMU'da doğrulandı).
+    dd 0        ; header_addr   (kullanılmıyor)
+    dd 0        ; load_addr     (kullanılmıyor)
+    dd 0        ; load_end_addr (kullanılmıyor)
+    dd 0        ; bss_end_addr  (kullanılmıyor)
+    dd 0        ; entry_addr    (kullanılmıyor)
+    ; ---- Video modu isteği ----
     dd 0        ; mode_type  0 = linear grafik
     dd 1024     ; genişlik
     dd 768      ; yükseklik
