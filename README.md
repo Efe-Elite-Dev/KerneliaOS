@@ -66,16 +66,6 @@ make            # kernel.bin uretir
 make iso        # windos.iso uretir (grub-mkrescue gerekir)
 Note: QEMU is highly recommended for the best visual experience. If you experience screen mirroring/flipping, simply press the F key while the OS is running to synchronize the display.
 
-🌍 Tarayıcı (Chromium köprüsü)
-WindOS tarayıcısı sayfaları, QEMU'yu çalıştıran makinede (host) çalışan Chromium ile açar; JavaScript'li siteler (ör. YouTube) ve DNS bu sayede çalışır. Köprü host'ta çalışmalıdır:
-
-Bash
-pip install playwright pillow
-python -m playwright install chromium
-python tools/chromium_bridge.py        # 127.0.0.1:8088 (WindOS icinden 10.0.2.2:8088)
-
-WindOS'ta TARAYICI'yı açıp adres yazın (ör. www.youtube.com) ve Enter'a basın. Ok tuşları sayfayı kaydırır, sol tık bağlantıya tıklar. Köprü kapalıysa IP:PORT/yol adresleri eski metin tarayıcısıyla açılır.
-
 🗺️ Roadmap
 [x] V13 Stable (x86 PC): Flawless execution of core kernel modules, UI design, and universal installer.
 
