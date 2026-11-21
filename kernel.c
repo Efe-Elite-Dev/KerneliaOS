@@ -1630,6 +1630,22 @@ static int BR_PAGE = 0; /* 0 ana sayfa, 1 hata, 2 hakkinda, 3 metin sayfasi, 4 C
 #define BR_PORT 8088             /* koprunun portu (--port ile degisir) */
 static u32 BR_IMG[BR_VW * BR_VH]; /* son ekran goruntusu, 0xAARRGGBB */
 static int BR_IW = 0, BR_IH = 0;  /* goruntu boyutu (0 = yok) */
+/* Video modu (YouTube): host kucuk bir viewport'tan kare yollar, biz 2 kat buyuturuz.
+   Kucuk kare = daha az bayt = daha akici kare hizi. */
+#define BR_VSW 360
+#define BR_VSH 202
+#define BR_VSC 2
+static int BR_VIDEO = 0;          /* 1: su anki sayfa video sitesi */
+static u32 BR_LAST = 0;           /* son kare yenilemesinin TICKS degeri */
+
+static int has_sub(const char *s, const char *sub){
+    for(int i = 0; s[i]; i++){
+        int m = 0;
+        while(sub[m] && s[i + m] == sub[m]) m++;
+        if(!sub[m]) return 1;
+    }
+    return 0;
+}
 
 static u32 le32(const u8 *p){ return (u32)p[0] | ((u32)p[1] << 8) | ((u32)p[2] << 16) | ((u32)p[3] << 24); }
 static u16 le16(const u8 *p){ return (u16)(p[0] | (p[1] << 8)); }
@@ -1681,10 +1697,10 @@ static int bridge_req(const char *q){
     for(int i = 0; q[i] && k < 430; i++) path[k++] = q[i];
     path[k] = 0;
     kcpy(path + k, "&w="); k = (int)klen(path);
-    dec_str(BR_VW, path + k);
+    dec_str(BR_VIDEO ? BR_VSW : BR_VW, path + k);
     k = (int)klen(path);
     kcpy(path + k, "&h="); k = (int)klen(path);
-    dec_str(BR_VH, path + k);
+    dec_str(BR_VIDEO ? BR_VSH : BR_VH, path + k);
 
     if(!http_get(NET_GW, BR_PORT, path, "10.0.2.2", 1500)) return 0;
     if(TCP_RXN < 60) { kcpy(BR_ERR, "KOPRU BOS YANIT"); return -1; }
@@ -1737,11 +1753,12 @@ static void br_go(void){
     if(!NIC_UP){ BR_PAGE = 1; kcpy(BR_ERR, "AG KARTI YOK (QEMU -nic user,model=rtl8139)"); return; }
 
     /* Once Chromium koprusu: JavaScript'li siteler, DNS ve adres biçimi serbest */
+    BR_VIDEO = has_sub(BR_URL, "youtube") || has_sub(BR_URL, "youtu.be");
     char q[256];
     kcpy(q, "a=go&u=");
     pct_enc(q + 7, BR_URL);
     int r = bridge_req(q);
-    if(r != 0){ BR_PAGE = (r > 0) ? 4 : 1; return; }
+    if(r != 0){ BR_PAGE = (r > 0) ? 4 : 1; BR_LAST = TICKS; return; }
 
     /* Kopru kapaliysa: IP:PORT/YOL adresi icin eski HTTP metin tarayicisi */
     u32 ip = 0; u16 port = 80; char path[96];
@@ -1759,6 +1776,11 @@ static void br_key(u8 c){
     if(BR_PAGE == 4){
         if(c == KEY_UP){ br_act("a=scroll&dy=-200"); return; }
         if(c == KEY_DOWN){ br_act("a=scroll&dy=200"); return; }
+        if(BR_VIDEO){
+            if(c == KEY_LEFT){ br_act("a=key&k=ArrowLeft"); return; }
+            if(c == KEY_RIGHT){ br_act("a=key&k=ArrowRight"); return; }
+            if(c == ' '){ br_act("a=key&k=Space"); return; }   /* bosluk URL'de gecersiz: oynat/duraklat */
+        }
     }
     if(c == KEY_UP){ if(BR_SCROLL > 0) BR_SCROLL--; return; }
     if(c == KEY_DOWN){ if(BR_SCROLL + 1 < BR_NL) BR_SCROLL++; return; }
@@ -1814,17 +1836,28 @@ static void BROWSER_APP(void){
     else if(BR_PAGE == 4){
         /* Sayfa alani: once tiklamayi isle (sol tik -> koprude tiklama), sonra goruntuyu ciz */
         i32 vx = wx + 20, vy = wy + 92;
+        const int sc = BR_VIDEO ? BR_VSC : 1;   /* ekran piksel / sayfa piksel */
         if(HOV(vx, vy, BR_VW, BR_VH) && MLB && !PMLB){
             char q[48];
             kcpy(q, "a=click&x=");
-            dec_str((u32)(MX - vx), q + klen(q));
+            dec_str((u32)((MX - vx) / sc), q + klen(q));
             kcpy(q + klen(q), "&y=");
-            dec_str((u32)(MY - vy), q + klen(q));
+            dec_str((u32)((MY - vy) / sc), q + klen(q));
             br_act(q);
+        }
+        /* Video: kareyi yaklasik 5 tikte bir (~10 kare/sn hedefi) ister; ag hizi sinirlar */
+        if(BR_VIDEO && BR_PAGE == 4 && BR_IW > 0 && TICKS - BR_LAST >= 5){
+            BR_LAST = TICKS;
+            br_act("a=frame");
         }
         if(BR_PAGE == 4 && BR_IW > 0){
             for(int r = 0; r < BR_IH; r++)
-                for(int c = 0; c < BR_IW; c++) pset(vx + c, vy + r, BR_IMG[r * BR_VW + c]);
+                for(int c = 0; c < BR_IW; c++){
+                    u32 px = BR_IMG[r * BR_VW + c];
+                    for(int dy = 0; dy < sc; dy++)
+                        for(int dx = 0; dx < sc; dx++)
+                            pset(vx + c * sc + dx, vy + r * sc + dy, px);
+                }
         }
         if(BR_PAGE == 1){
             ds(wx + 40, wy + 115, "BAGLANILAMADI", CRD, 0, 1);
@@ -2170,7 +2203,7 @@ static void frame_wait(void){
 /* Kare animasyon gerektiriyor mu (ses, oyun, saat, acilis, kurulum) */
 static int animating(void){
     return AI_BOOT_PHASE < 2 || MUS_PLAYING || (SN_OPEN && !SN_DEAD) || MIKU_OPEN
-        || TASKMGR_OPEN;
+        || TASKMGR_OPEN || (BR_OPEN && BR_PAGE == 4 && BR_VIDEO);
 }
 
 /* ========================================================================= */
