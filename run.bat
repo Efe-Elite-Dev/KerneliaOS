@@ -24,6 +24,7 @@ echo Calistirilan ISO: "%~1"
 echo QEMU baslatiliyor...
 
 :: -nic user: QEMU NAT agi (misafir 10.0.2.15, ag gecidi 10.0.2.2, DNS 10.0.2.3)
+:: -audiodev sdl + AC97: ses karti (komut: ses 440). pcspk: PC hoparlor muzigi de ayni cikisti.
 "%QEMU_EXE%" ^
   -m 2048 ^
   -smp 2 ^
@@ -31,6 +32,9 @@ echo QEMU baslatiliyor...
   -boot order=d ^
   -vga std ^
   -display sdl ^
+  -audiodev sdl,id=snd0 ^
+  -machine pcspk-audiodev=snd0 ^
+  -device AC97,audiodev=snd0 ^
   -nic user,model=rtl8139
 
 if %errorlevel% neq 0 (
