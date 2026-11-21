@@ -1877,12 +1877,30 @@ static void on_key(u8 c){
     if(FOCUS == 4 && BR_OPEN){ br_key(c); return; }
 }
 
+/* WindOS logosu: mavi yuvarlak kare icinde 4 beyaz parca (x,y sol ust, s kenar) */
+static void logo_mark(i32 x, i32 y, i32 s){
+    rr(x, y, s, s, s / 4, WIN_BLUE);
+    i32 g = s / 8; if(g < 1) g = 1;
+    i32 q = (s - 3 * g) / 2;
+    fr(x + g, y + g, q, q, CW);
+    fr(x + 2 * g + q, y + g, q, q, CW);
+    fr(x + g, y + 2 * g + q, q, q, CW);
+    fr(x + 2 * g + q, y + 2 * g + q, q, q, CW);
+}
+
+/* Dock altindaki kisa isim, kutucugun ortasina gelir */
+static void dock_label(i32 cx, i32 y, const char *s){
+    i32 w = (i32)klen(s) * 8;
+    ds(cx - w / 2, y, s, CGY, 0, 1);
+}
+
 static void DESKTOP(void){
     fr(0, 0, (i32)SW, (i32)SH, BG_BASE);
 
     /* UST CUBUK */
     frg(0, 0, (i32)SW, 25, PAN_BG);
-    ds(15, 8, "WINDOS", CTXT, 0, 1);
+    logo_mark(12, 5, 16);
+    ds(34, 8, "WINDOS", CTXT, 0, 1);
     /* Arama simgesi: Spotlight'i acar/kapatir */
     disc((i32)SW - 212, 10, 5, CW);
     disc((i32)SW - 212, 10, 3, PAN_BG);
@@ -1891,8 +1909,8 @@ static void DESKTOP(void){
 
     /* DOCK */
     i32 dock_w = 725, dock_x = ((i32)SW - dock_w) / 2, dock_y = (i32)SH - 80;
-    rrg(dock_x, dock_y, dock_w, 65, 15, DOCK_BG);
-    rb(dock_x, dock_y, dock_w, 65, PAN_BD, 1);
+    rrg(dock_x, dock_y, dock_w, 80, 15, DOCK_BG);
+    rb(dock_x, dock_y, dock_w, 80, PAN_BD, 1);
 
     rr(dock_x + 15, dock_y + 10, 45, 45, 10, WIN_BLUE);
     fr(dock_x + 25, dock_y + 20, 10, 10, CW); fr(dock_x + 40, dock_y + 20, 10, 10, CW);
@@ -1925,6 +1943,11 @@ static void DESKTOP(void){
     rr(dock_x + 665, dock_y + 10, 45, 45, 10, 0xFF4285F4u);
     if(CLK(dock_x + 665, dock_y + 10, 45, 45)){ BR_OPEN = 1; FOCUS = 4; }
 
+    /* Kutucuk isimleri (her kutucugun altinda) */
+    static const i32 DOCK_X[11] = {15, 80, 145, 210, 275, 340, 405, 470, 535, 600, 665};
+    static const char *DOCK_NM[11] = {"BASLA", "DOSYA", "TERM", "WINDAI", "AYAR", "GOREV", "MUZIK", "MIKU", "NOT", "YILAN", "WEB"};
+    for(int di = 0; di < 11; di++) dock_label(dock_x + DOCK_X[di] + 22, dock_y + 60, DOCK_NM[di]);
+
     FILEMGR(); TERMINAL_APP(); TASKMGR_APP(); SYSTEM_APP(); DISPLAY_APP(); WINDAI_ASSISTANT();
     MUSIC_APP(); MIKU_APP(); NOTES_APP(); SNAKE_APP(); BROWSER_APP();
     START_MENU(); SPOTLIGHT_SEARCH();
@@ -1934,6 +1957,7 @@ static void DESKTOP(void){
 /* Acilis: AI tarama ekrani */
 static void BOOT_SCREEN(void){
     fr(0, 0, (i32)SW, (i32)SH, CK);
+    logo_mark(((i32)SW - 72) / 2, (i32)SH / 2 - 130, 72);
     dsc(0, (i32)SH / 2 - 8, (i32)SW, "WINDOS", CW, CK, 2);
     dsc(0, (i32)SH / 2 + 30, (i32)SW, "Yukleniyor...", CGY, CK, 1);
     AI_TIMER++;
