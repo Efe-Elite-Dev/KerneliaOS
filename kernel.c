@@ -277,6 +277,14 @@ static int mq_pop(u8 *d){ if(MQH == MQT) return 0; *d = MQ[MQH]; MQH = (MQH + 1)
 #define KEY_RIGHT 0x84
 
 /* Bir tus olayi dondurur: ASCII, ok kodu veya 0 (olay yok) */
+/* Shift'li noktalama (US duzeni): ornek ':' icin Shift+; */
+static char shift_sym(char c){
+    static const char from[] = "1234567890-=[]\\;'`,./";
+    static const char to[]   = "!@#$%^&*()_+{}|:\"~<>?";
+    for(int i = 0; from[i]; i++) if(from[i] == c) return to[i];
+    return c;
+}
+
 static u8 kbd_poll(void){
     static int ext = 0;
     u8 sc; if(!kq_pop(&sc)) return 0;
@@ -301,6 +309,7 @@ static u8 kbd_poll(void){
     if(sc >= 128) return 0;
     char c = SCMAP[sc]; if(!c) return 0;
     if(c >= 'A' && c <= 'Z' && !(K_SH ^ K_CP)) c = (char)(c + 32);
+    if(K_SH) c = shift_sym(c);
     return (u8)c;
 }
 
@@ -963,6 +972,8 @@ static void icmp_rx(u32 src, const u8 *m, int n){
     }
 }
 
+static void tcp_rx(u32 src, const u8 *s, int n);
+
 static void ip_rx(const u8 *p, int n){
     if(n < 20 || (p[0] >> 4) != 4) return;
     int ihl = (p[0] & 0x0F) * 4;
@@ -970,6 +981,7 @@ static void ip_rx(const u8 *p, int n){
     if(ihl < 20 || tot < ihl || tot > n) return;
     if(get32(p + 16) != NET_IP) return;
     if(p[9] == 1) icmp_rx(get32(p + 12), p + ihl, tot - ihl);
+    else if(p[9] == 6) tcp_rx(get32(p + 12), p + ihl, tot - ihl);
 }
 
 static void net_rx(const u8 *f, int n){
@@ -1109,6 +1121,287 @@ static void nic_init(void){
     NIC_UP = 1;
 }
 
+/* ========================================================================= */
+/* SES: INTEL AC97 SURUCUSU (PCM cikisi, DMA tamponlari)                     */
+/* ========================================================================= */
+/* PCI sinif 04:01 (cokluortam ses). NAM = mikser (BAR0), NABM = DMA (BAR1).
+   Cikis: 16 bit stereo, 48000 Hz. 32 tampon x 2048 kare = ~1.37 sn.        */
+
+#define AC97_FRAMES 2048
+#define AC97_BDL_N  32
+typedef struct { u32 addr; u16 len; u16 ctl; } AcBdl;
+static AcBdl AC_BDL[AC97_BDL_N] __attribute__((aligned(8)));
+static short AC_PCM[AC97_BDL_N][AC97_FRAMES * 2] __attribute__((aligned(16)));
+static u16 AC_NAM = 0, AC_NABM = 0;
+static int AC_UP = 0;
+static int AC_PLAYING = 0;
+static u32 AC_STOP_T = 0;
+
+static void ac97_init(void){
+    PciDev *d = 0;
+    for(int i = 0; i < PCI_N; i++){
+        if(PCI_LIST[i].cls == 0x04 && PCI_LIST[i].sub == 0x01){ d = &PCI_LIST[i]; break; }
+    }
+    if(!d) return;
+    u32 cmd = pci_read32(0, d->dev, d->fn, 0x04);
+    pci_write32(0, d->dev, d->fn, 0x04, (cmd & 0xFFFFu) | 0x5u);   /* I/O + bus master */
+    AC_NAM  = (u16)(d->bar0 & 0xFFFCu);
+    AC_NABM = (u16)(pci_read32(0, d->dev, d->fn, 0x14) & 0xFFC0u);
+    if(!AC_NAM || !AC_NABM) return;
+    outl(AC_NABM + 0x2C, 0x00000002u);                 /* GC: soguk reset cikisi */
+    for(u32 i = 0; i < 500000 && !(inl(AC_NABM + 0x30) & 0x100); i++);  /* GS: codec hazir */
+    outw(AC_NAM + 0x00, 0x0000);                       /* codec reset */
+    outw(AC_NAM + 0x02, 0x0808);                       /* ana ses (sessiz degil, orta) */
+    outw(AC_NAM + 0x18, 0x0808);                       /* PCM cikis sesi */
+    outw(AC_NAM + 0x2C, 48000);                        /* PCM ornekleme hizi */
+    AC_UP = 1;
+}
+
+/* Kare dizisi: kare kare kare dalgasi (genlik 6000), faz tamponlar arasinda surer */
+static void ac97_fill(u32 hz){
+    u32 period = 48000u / hz;
+    if(period < 2) period = 2;
+    static u32 ph = 0;
+    for(int b = 0; b < AC97_BDL_N; b++){
+        for(int f = 0; f < AC97_FRAMES; f++){
+            short v = (ph < period / 2) ? 6000 : -6000;
+            AC_PCM[b][f * 2]     = v;
+            AC_PCM[b][f * 2 + 1] = v;
+            ph = (ph + 1 >= period) ? 0 : ph + 1;
+        }
+        AC_BDL[b].addr = (u32)(unsigned long)AC_PCM[b];
+        AC_BDL[b].len  = AC97_FRAMES * 2;              /* ornek (16 bit) sayisi */
+        AC_BDL[b].ctl  = 0x8000;                       /* IOC: tampon bitince kesme isareti */
+    }
+}
+
+static void ac97_stop(void){
+    if(!AC_UP) return;
+    outb(AC_NABM + 0x1B, 0x00);                        /* PO CR: durdur */
+    AC_PLAYING = 0;
+}
+
+static void ac97_play(u32 hz, u32 ms){
+    if(!AC_UP){ tl_add("SES KARTI YOK: QEMU -device AC97 ile calistirin."); return; }
+    ac97_fill(hz);
+    outb(AC_NABM + 0x1B, 0x02);                        /* PO reset */
+    for(int i = 0; i < 100000 && (inb(AC_NABM + 0x1B) & 0x02); i++);
+    outl(AC_NABM + 0x10, (u32)(unsigned long)AC_BDL);  /* PO BDBAR */
+    outb(AC_NABM + 0x15, AC97_BDL_N - 1);              /* LVI: son tampon */
+    outw(AC_NABM + 0x16, 0x001C);                      /* SR: bayraklari temizle */
+    outb(AC_NABM + 0x1B, 0x01);                        /* RPBM: calistir */
+    AC_PLAYING = 1;
+    u32 ticks = ms * FRAME_HZ / 1000;
+    AC_STOP_T = TICKS + (ticks ? ticks : 1);
+}
+
+/* Kare dongusunde cagrilir: sure dolunca ya da veri bitince durdurur */
+static void ac97_tick(void){
+    if(!AC_PLAYING) return;
+    if(TICKS >= AC_STOP_T || (inb(AC_NABM + 0x1B) & 0x01) == 0) ac97_stop();
+}
+
+static u32 parse_uint(const char *s){
+    u32 v = 0; int d = 0;
+    while(*s >= '0' && *s <= '9' && d < 6){ v = v * 10 + (u32)(*s - '0'); s++; d++; }
+    return d ? v : 0;
+}
+
+/* ses [hz]: 40..4000 Hz arasi kare dalga, 1 sn */
+static void ses_cmd(const char *arg){
+    u32 hz = *arg ? parse_uint(arg) : 440;
+    if(hz < 40 || hz > 4000){ tl_add("GECERSIZ FREKANS (40-4000 HZ)."); return; }
+    if(!AC_UP){ tl_add("SES KARTI YOK: QEMU -device AC97 ile calistirin."); return; }
+    ac97_play(hz, 1000);
+    char line[80], hs[12];
+    dec_str(hz, hs);
+    kcpy(line, "SES: ");
+    kcpy(line + klen(line), hs);
+    kcpy(line + klen(line), " HZ, 1 SN CALISIYOR");
+    tl_add(line);
+}
+
+/* ========================================================================= */
+/* TCP ISTEMCISI (tek baglanti) ve HTTP GET                                  */
+/* ========================================================================= */
+#define TF_FIN 0x01
+#define TF_SYN 0x02
+#define TF_RST 0x04
+#define TF_PSH 0x08
+#define TF_ACK 0x10
+#define TCP_MSS 1400
+#define TCP_RX_CAP 32768
+
+enum { TS_CLOSED = 0, TS_SYN_SENT, TS_ESTAB, TS_DONE };
+static int TCP_STATE = TS_CLOSED;
+static u32 TCP_RIP = 0;
+static u16 TCP_RPORT = 0, TCP_LPORT = 0;
+static u32 TCP_SEQ = 0, TCP_ACK = 0;
+static u8  TCP_RX[TCP_RX_CAP];
+static int TCP_RXN = 0;
+static int TCP_FIN = 0;
+static u16 TCP_EPHEM = 49152;
+
+static u16 tcp_csum(u32 src, u32 dst, const u8 *seg, int n){
+    u8 ph[12];
+    put32(ph, src); put32(ph + 4, dst); ph[8] = 0; ph[9] = 6; put16(ph + 10, (u16)n);
+    u32 s = 0;
+    for(int i = 0; i < 12; i += 2) s += (u32)((ph[i] << 8) | ph[i + 1]);
+    for(int i = 0; i + 1 < n; i += 2) s += (u32)((seg[i] << 8) | seg[i + 1]);
+    if(n & 1) s += (u32)(seg[n - 1] << 8);
+    while(s >> 16) s = (s & 0xFFFF) + (s >> 16);
+    return (u16)~s;
+}
+
+/* Bir TCP segmenti gonderir; SYN/FIN sirayi bir artirir */
+static int tcp_out(u8 flags, const u8 *data, int n){
+    u8 seg[20 + TCP_MSS];
+    if(n < 0 || n > TCP_MSS) return 0;
+    put16(seg, TCP_LPORT); put16(seg + 2, TCP_RPORT);
+    put32(seg + 4, TCP_SEQ); put32(seg + 8, TCP_ACK);
+    seg[12] = 0x50; seg[13] = flags;
+    put16(seg + 14, 8192); put16(seg + 16, 0); put16(seg + 18, 0);
+    for(int i = 0; i < n; i++) seg[20 + i] = data[i];
+    put16(seg + 16, tcp_csum(NET_IP, TCP_RIP, seg, 20 + n));
+    if(!ip_send(TCP_RIP, 6, seg, 20 + n)) return 0;
+    TCP_SEQ += (u32)n + ((flags & (TF_SYN | TF_FIN)) ? 1u : 0u);
+    return 1;
+}
+
+static void tcp_rx(u32 src, const u8 *s, int n){
+    if(n < 20) return;
+    u16 sp = get16(s), dp = get16(s + 2);
+    u32 seq = get32(s + 4), ack = get32(s + 8);
+    int doff = (s[12] >> 4) * 4;
+    u8 fl = s[13];
+    if(doff < 20 || doff > n) return;
+    if(src != TCP_RIP || sp != TCP_RPORT || dp != TCP_LPORT) return;
+    if(fl & TF_RST){ TCP_STATE = TS_DONE; TCP_FIN = 1; return; }
+    if(TCP_STATE == TS_SYN_SENT){
+        if((fl & (TF_SYN | TF_ACK)) == (TF_SYN | TF_ACK) && ack == TCP_SEQ){
+            TCP_ACK = seq + 1;
+            TCP_STATE = TS_ESTAB;
+            tcp_out(TF_ACK, 0, 0);
+        }
+        return;
+    }
+    if(TCP_STATE != TS_ESTAB) return;
+    int pl = n - doff;
+    if(pl > 0 && seq == TCP_ACK){                     /* sirali veri: al */
+        for(int i = 0; i < pl && TCP_RXN < TCP_RX_CAP; i++) TCP_RX[TCP_RXN++] = s[doff + i];
+        TCP_ACK += (u32)pl;
+    }
+    if((fl & TF_FIN) && seq + (u32)pl == TCP_ACK){    /* karsi taraf kapatiyor */
+        TCP_ACK++;
+        TCP_FIN = 1;
+    }
+    if(pl > 0 || (fl & TF_FIN)) tcp_out(TF_ACK, 0, 0);
+}
+
+/* SYN gonderir, SYN-ACK bekler (3 deneme, her biri ~1 sn) */
+static int tcp_connect(u32 ip, u16 port){
+    u32 nh = (((ip ^ NET_IP) & 0xFFFFFF00u) == 0) ? ip : NET_GW;
+    if(!arp_resolve(nh)) return 0;
+    TCP_RIP = ip; TCP_RPORT = port;
+    TCP_LPORT = TCP_EPHEM++;
+    if(TCP_EPHEM < 49152) TCP_EPHEM = 49152;
+    TCP_RXN = 0; TCP_FIN = 0;
+    u32 isn = 0x1000u + TICKS * 7919u;
+    for(int tries = 0; tries < 3; tries++){
+        TCP_STATE = TS_SYN_SENT;
+        TCP_SEQ = isn; TCP_ACK = 0;
+        tcp_out(TF_SYN, 0, 0);
+        u32 until = TICKS + 50;
+        while(TICKS < until && TCP_STATE == TS_SYN_SENT){ nic_poll(); __asm__ volatile("hlt"); }
+        if(TCP_STATE != TS_SYN_SENT) break;
+    }
+    return TCP_STATE == TS_ESTAB;
+}
+
+/* HTTP/1.0 GET: yaniti TCP_RX'e doldurur (sunucu kapatinca biter, en fazla ~3 sn) */
+static int http_get(u32 ip, u16 port, const char *path, const char *host){
+    if(!tcp_connect(ip, port)) return 0;
+    char req[256];
+    int k = 0;
+    const char *parts[5] = { "GET ", path, " HTTP/1.0\r\nHost: ", host, "\r\nConnection: close\r\n\r\n" };
+    for(int i = 0; i < 5; i++){
+        for(int j = 0; parts[i][j] && k < 250; j++) req[k++] = parts[i][j];
+    }
+    for(int off = 0; off < k; off += TCP_MSS){
+        int c = (k - off < TCP_MSS) ? (k - off) : TCP_MSS;
+        tcp_out(TF_PSH | TF_ACK, (const u8 *)req + off, c);
+    }
+    u32 until = TICKS + 150;
+    while(!TCP_FIN && TICKS < until){ nic_poll(); __asm__ volatile("hlt"); }
+    if(TCP_FIN && TCP_STATE == TS_ESTAB) tcp_out(TF_FIN | TF_ACK, 0, 0);
+    TCP_STATE = TS_DONE;
+    return TCP_RXN > 0;
+}
+
+/* Yaniti terminale yazar: durum satiri, boyut ve govdenin ilk satirlari */
+static void http_show(void){
+    int hdr_end = -1;
+    for(int i = 0; i + 3 < TCP_RXN; i++){
+        if(TCP_RX[i] == '\r' && TCP_RX[i + 1] == '\n' && TCP_RX[i + 2] == '\r' && TCP_RX[i + 3] == '\n'){ hdr_end = i + 4; break; }
+    }
+    char line[80];
+    int n = 0;
+    for(int i = 0; i < TCP_RXN && i < 70 && TCP_RX[i] != '\r' && TCP_RX[i] != '\n'; i++) line[n++] = (char)TCP_RX[i];
+    line[n] = 0;
+    tl_add(line);
+    char bs[12];
+    dec_str((u32)TCP_RXN, bs);
+    kcpy(line, "BOYUT: "); kcpy(line + klen(line), bs); kcpy(line + klen(line), " BAYT");
+    tl_add(line);
+    int b = (hdr_end < 0) ? 0 : hdr_end;
+    int shown = 0;
+    while(b < TCP_RXN && shown < 12){
+        n = 0;
+        while(b < TCP_RXN && TCP_RX[b] != '\n' && n < 76){
+            if(TCP_RX[b] != '\r') line[n++] = (char)TCP_RX[b];
+            b++;
+        }
+        while(b < TCP_RXN && TCP_RX[b] != '\n') b++;   /* uzun satirin kalani */
+        b++;
+        line[n] = 0;
+        tl_add(line);
+        shown++;
+    }
+}
+
+/* URL: [http://]ip[:port][/yol] -> ip, port, yol. Ornek: 10.0.2.2:8080/index.html */
+static int url_parse(const char *arg, u32 *ip, u16 *port, char *path){
+    if(arg[0] == 'h' && arg[1] == 't' && arg[2] == 't' && arg[3] == 'p' && arg[4] == ':' && arg[5] == '/' && arg[6] == '/')
+        arg += 7;
+    char host[32]; int hn = 0;
+    while(arg[hn] && arg[hn] != ':' && arg[hn] != '/' && arg[hn] != ' ' && hn < 31){ host[hn] = arg[hn]; hn++; }
+    host[hn] = 0;
+    if(!parse_ip(host, ip)) return 0;
+    const char *p = arg + hn;
+    u32 pt = 80;
+    if(*p == ':'){ p++; pt = parse_uint(p); while(*p >= '0' && *p <= '9') p++; }
+    if(pt == 0 || pt > 65535) return 0;
+    *port = (u16)pt;
+    path[0] = '/'; path[1] = 0;
+    if(*p == '/'){
+        int k = 0;
+        while(p[k] && p[k] != ' ' && k < 94){ path[k] = p[k]; k++; }
+        path[k] = 0;
+    }
+    return 1;
+}
+
+/* http ip[:port][/yol]: ornek http 10.0.2.2:8080/index.html */
+static void http_cmd(const char *arg){
+    if(!NIC_UP){ tl_add("AG KARTI YOK: QEMU -nic user,model=rtl8139 ile calistirin."); return; }
+    u32 ip = 0; u16 port = 80; char path[96];
+    if(!url_parse(arg, &ip, &port, path)){ tl_add("KULLANIM: http ip[:port][/yol]  (ornek: http 10.0.2.2:8080/index.html)"); return; }
+    char ipst[16];
+    ip_str(ip, ipst);
+    if(!http_get(ip, port, path, ipst)){ tl_add("BAGLANTI KURULAMADI (ZAMAN ASIMI)."); return; }
+    http_show();
+}
+
 static void term_exec(void){
     char line[TL_W];
     int n = TIN_LEN;
@@ -1129,7 +1422,7 @@ static void term_exec(void){
     const char *arg = &line[i];
     if(c == 0) return;
 
-    if(str_eq(cmd, "help")){ tl_add("KOMUTLAR: help ver mem echo clear time muzik miku not snake web exit lspci"); tl_add("AG: ping [ip]  (ornek: ping 10.0.2.2)"); }
+    if(str_eq(cmd, "help")){ tl_add("KOMUTLAR: help ver mem echo clear time muzik miku not snake web exit lspci"); tl_add("AG: ping [ip]  (ornek: ping 10.0.2.2)"); tl_add("SES: ses [hz]  (ornek: ses 440)"); tl_add("HTTP: http ip[:port][/yol]"); }
     else if(str_eq(cmd, "ver"))   tl_add("WindOS 18.1 (x86, 32-bit)");
     else if(str_eq(cmd, "mem")){
         char b[TL_W]; kcpy(b, "FIZIKSEL RAM (MULTIBOOT): ");
@@ -1148,6 +1441,8 @@ static void term_exec(void){
     else if(str_eq(cmd, "exit"))  TERM_OPEN = 0;
     else if(str_eq(cmd, "lspci")) pci_list_to_term();
     else if(str_eq(cmd, "ping"))  ping_cmd(arg);
+    else if(str_eq(cmd, "ses"))   ses_cmd(arg);
+    else if(str_eq(cmd, "http"))  http_cmd(arg);
     else {
         char b[TL_W];
         app_str(b, "BILINMEYEN KOMUT: ", cmd);
@@ -1195,19 +1490,156 @@ static void TERMINAL_APP(void){
     ds(cx + 16, cy + ch - 26, pr, CGN, 0, 1);
 }
 
-/* ---- TARAYICI: ag surucusu yok, yalnizca yerlesik sayfalar ---- */
+/* ---- HTML: basit ayristirici (baslik, paragraf, baslik etiketi, baglanti, liste) ---- */
+#define BR_MAXL 240
+#define BR_COLS 58
+static char BR_LN[BR_MAXL][BR_COLS + 1];
+static u8   BR_KD[BR_MAXL];            /* 0 metin, 1 baslik, 2 baglanti */
+static int  BR_NL = 0;
+static int  BR_SCROLL = 0;
+static char BR_TITLE[64];
+static char BR_CUR[BR_COLS + 1];
+static int  BR_CN = 0;
+static u8   BR_CK = 0;
+static u8   BR_STYLE = 0;
+
+static void br_flush(void){
+    while(BR_CN > 0 && BR_CUR[BR_CN - 1] == ' ') BR_CN--;
+    if(BR_CN > 0 && BR_NL < BR_MAXL){
+        for(int i = 0; i < BR_CN; i++) BR_LN[BR_NL][i] = BR_CUR[i];
+        BR_LN[BR_NL][BR_CN] = 0;
+        BR_KD[BR_NL] = BR_CK;
+        BR_NL++;
+    }
+    BR_CN = 0;
+}
+
+/* Blok sonu: satir bitir, arada bos satir birak */
+static void br_block(void){
+    br_flush();
+    if(BR_NL > 0 && BR_LN[BR_NL - 1][0] && BR_NL < BR_MAXL){
+        BR_LN[BR_NL][0] = 0; BR_KD[BR_NL] = 0; BR_NL++;
+    }
+}
+
+static void br_putc(char c){
+    if(c == ' ' && (BR_CN == 0 || BR_CUR[BR_CN - 1] == ' ')) return;
+    if(BR_CN == 0) BR_CK = BR_STYLE;
+    if(BR_CN >= BR_COLS){
+        br_flush();
+        if(c == ' ') return;
+    }
+    BR_CUR[BR_CN++] = c;
+}
+
+static void html_parse(const u8 *s, int n){
+    int skip = 0, in_title = 0, tl = 0;
+    char skipname[10] = {0};
+    BR_NL = 0; BR_CN = 0; BR_STYLE = 0; BR_SCROLL = 0; BR_TITLE[0] = 0;
+    int i = 0;
+    while(i < n){
+        u8 c = s[i];
+        if(c == '<'){
+            int j = i + 1, closing = 0, nl = 0;
+            char name[10];
+            if(j < n && s[j] == '/'){ closing = 1; j++; }
+            while(j < n && nl < 9 && ((s[j] >= 'a' && s[j] <= 'z') || (s[j] >= 'A' && s[j] <= 'Z') || (s[j] >= '0' && s[j] <= '9'))){
+                char ch = (char)s[j];
+                if(ch >= 'A' && ch <= 'Z') ch = (char)(ch + 32);
+                name[nl++] = ch; j++;
+            }
+            name[nl] = 0;
+            while(j < n && s[j] != '>') j++;
+            i = j + 1;
+            if(skip){ if(closing && str_eq(name, skipname)) skip = 0; continue; }
+            if(!closing && (str_eq(name, "script") || str_eq(name, "style"))){
+                skip = 1; kcpy(skipname, name); continue;
+            }
+            if(str_eq(name, "title")){ in_title = !closing; continue; }
+            if(str_eq(name, "br")){ br_flush(); continue; }
+            if(str_eq(name, "p") || str_eq(name, "div") || str_eq(name, "ul") || str_eq(name, "ol") || str_eq(name, "tr") || str_eq(name, "table")){
+                br_block(); continue;
+            }
+            if(str_eq(name, "li")){
+                br_block();
+                if(!closing){ br_putc('-'); br_putc(' '); }
+                continue;
+            }
+            if(name[0] == 'h' && name[1] >= '1' && name[1] <= '6' && !name[2]){
+                br_block(); BR_STYLE = closing ? 0 : 1;
+                if(closing) br_block();
+                continue;
+            }
+            if(str_eq(name, "a")){ BR_STYLE = closing ? 0 : 2; continue; }
+            continue;
+        }
+        if(skip){ i++; continue; }
+        if(in_title){
+            if(c >= 32 && c < 127 && tl < 60){ BR_TITLE[tl++] = (char)c; BR_TITLE[tl] = 0; }
+            i++; continue;
+        }
+        if(c == '&'){
+            int j = i + 1, el = 0;
+            char en[8];
+            while(j < n && el < 7 && s[j] != ';' && s[j] != ' ' && s[j] != '<'){ en[el++] = (char)s[j]; j++; }
+            en[el] = 0;
+            if(j < n && s[j] == ';'){
+                char out = 0;
+                if(str_eq(en, "amp")) out = '&';
+                else if(str_eq(en, "lt")) out = '<';
+                else if(str_eq(en, "gt")) out = '>';
+                else if(str_eq(en, "quot")) out = '"';
+                else if(str_eq(en, "nbsp")) out = ' ';
+                else if(str_eq(en, "apos")) out = '\'';
+                if(out){ br_putc(out); i = j + 1; continue; }
+            }
+            br_putc('&'); i++; continue;
+        }
+        if(c == '\n' || c == '\r' || c == '\t') br_putc(' ');
+        else if(c >= 32 && c < 127) br_putc((char)c);
+        else if(c >= 128){                       /* UTF-8 cok baytli: tek '?' */
+            if(BR_CN == 0 || BR_CUR[BR_CN - 1] != '?') br_putc('?');
+        }
+        i++;
+    }
+    br_flush();
+}
+
+/* TCP_RX icindeki yanitin govdesini ayristirir */
+static void html_from_response(void){
+    int b = 0;
+    for(int i = 0; i + 3 < TCP_RXN; i++){
+        if(TCP_RX[i] == '\r' && TCP_RX[i + 1] == '\n' && TCP_RX[i + 2] == '\r' && TCP_RX[i + 3] == '\n'){ b = i + 4; break; }
+    }
+    html_parse(TCP_RX + b, TCP_RXN - b);
+}
+
+/* ---- TARAYICI: IP adresi ile sayfa acar (ornek 10.0.2.2:8080/index.html) ---- */
 static char BR_URL[64]; static int BR_ULEN = 0;
 static char BR_TARGET[64];
-static int BR_PAGE = 0; /* 0 ana sayfa, 1 ag yok, 2 hakkinda */
+static char BR_ERR[64];
+static int BR_PAGE = 0; /* 0 ana sayfa, 1 hata, 2 hakkinda, 3 yuklenen sayfa */
 
 static void br_go(void){
     BR_URL[BR_ULEN] = 0;
-    if(BR_ULEN == 0 || str_eq(BR_URL, "home")) BR_PAGE = 0;
-    else if(str_eq(BR_URL, "about")) BR_PAGE = 2;
-    else { BR_PAGE = 1; kcpy(BR_TARGET, BR_URL); }
+    if(BR_ULEN == 0 || str_eq(BR_URL, "home")){ BR_PAGE = 0; return; }
+    if(str_eq(BR_URL, "about")){ BR_PAGE = 2; return; }
+    kcpy(BR_TARGET, BR_URL);
+    if(!NIC_UP){ BR_PAGE = 1; kcpy(BR_ERR, "AG KARTI YOK (QEMU -nic user,model=rtl8139)"); return; }
+    u32 ip = 0; u16 port = 80; char path[96];
+    if(!url_parse(BR_URL, &ip, &port, path)){
+        BR_PAGE = 1; kcpy(BR_ERR, "ADRES: IP:PORT/YOL  (ornek 10.0.2.2:8080/index.html)"); return;
+    }
+    char host[16];
+    ip_str(ip, host);
+    if(!http_get(ip, port, path, host)){ BR_PAGE = 1; kcpy(BR_ERR, "BAGLANTI KURULAMADI (ZAMAN ASIMI)"); return; }
+    html_from_response();
+    BR_PAGE = 3;
 }
 
 static void br_key(u8 c){
+    if(c == KEY_UP){ if(BR_SCROLL > 0) BR_SCROLL--; return; }
+    if(c == KEY_DOWN){ if(BR_SCROLL + 1 < BR_NL) BR_SCROLL++; return; }
     if(c == 8){ if(BR_ULEN > 0) BR_ULEN--; return; }
     if(c == '\n' || c == '\r'){ br_go(); return; }
     if(c >= 32 && c < 127 && BR_ULEN < 60) BR_URL[BR_ULEN++] = (char)c;
@@ -1234,21 +1666,34 @@ static void BROWSER_APP(void){
     rr(wx + 20, wy + 92, ww - 40, wh - 112, 10, PAN_BG);
     if(BR_PAGE == 0){
         ds(wx + 40, wy + 115, "WINDOS TARAYICI", CW, 0, 1);
-        ds(wx + 40, wy + 135, "Ag surucusu yok: internet sayfalari acilamaz.", CGY, 0, 1);
-        ds(wx + 40, wy + 155, "Adres kutusuna 'about' yazip Enter'a basin.", CGY, 0, 1);
+        ds(wx + 40, wy + 135, "Sayfa icin IP adresi yazin ve Enter'a basin:", CGY, 0, 1);
+        ds(wx + 40, wy + 155, "ornek: 10.0.2.2:8080/index.html", CTXT, 0, 1);
+        ds(wx + 40, wy + 185, "Yerel ayarlar icin 'about' yazin.", CGY, 0, 1);
     }
     else if(BR_PAGE == 1){
-        ds(wx + 40, wy + 115, "BAGLANILAMIYOR", CRD, 0, 1);
-        ds(wx + 40, wy + 135, "Ag surucusu yok (NIC, TCP/IP, DNS).", CTXT, 0, 1);
+        ds(wx + 40, wy + 115, "BAGLANILAMADI", CRD, 0, 1);
+        ds(wx + 40, wy + 135, BR_ERR, CTXT, 0, 1);
         ds(wx + 40, wy + 155, "Adres:", CGY, 0, 1);
         ds(wx + 100, wy + 155, BR_TARGET, CW, 0, 1);
-        ds(wx + 40, wy + 185, "Ana sayfa icin adres kutusuna 'home' yazin.", CGY, 0, 1);
+    }
+    else if(BR_PAGE == 3){
+        if(BR_TITLE[0]){
+            char tt[72]; kcpy(tt, "BASLIK: "); kcpy(tt + klen(tt), BR_TITLE);
+            ds(wx + 30, wy + 100, tt, CGY, 0, 1);
+        }
+        int vis = 16;
+        for(int r = 0; r < vis && BR_SCROLL + r < BR_NL; r++){
+            int idx = BR_SCROLL + r;
+            u32 col = (BR_KD[idx] == 1) ? CW : (BR_KD[idx] == 2) ? WIN_BLUE : CTXT;
+            ds(wx + 30, wy + 116 + r * 14, BR_LN[idx], col, 0, 1);
+        }
+        if(BR_NL == 0) ds(wx + 30, wy + 116, "(sayfada metin yok)", CGY, 0, 1);
     }
     else {
         ds(wx + 40, wy + 115, "HAKKINDA", CW, 0, 1);
         ds(wx + 40, wy + 135, "WindOS 18.1", CTXT, 0, 1);
-        ds(wx + 40, wy + 155, "Tarayici yerlesik sayfalari gosterir.", CGY, 0, 1);
-        ds(wx + 40, wy + 171, "Internet icin ag surucusu gerekir.", CGY, 0, 1);
+        ds(wx + 40, wy + 155, "Tarayici IP adresiyle sayfa acar (HTTP).", CGY, 0, 1);
+        ds(wx + 40, wy + 171, "Ok tuslari ile sayfayi kaydirin.", CGY, 0, 1);
     }
 }
 
@@ -1593,6 +2038,7 @@ void kernel_main(multiboot_info_t *mbi){
 
     mouse_init(); term_init();
     nic_init();
+    ac97_init();
     timer_init();
 
     while(1){
@@ -1600,6 +2046,7 @@ void kernel_main(multiboot_info_t *mbi){
         ps2_pump();
         mouse_poll();
         nic_poll();
+        ac97_tick();
         for(int ki = 0; ki < 8; ki++) on_key(kbd_poll());
         apps_tick();
         int anim = animating();
