@@ -61,12 +61,15 @@ jobs:
         path: WindOS-Quantum.iso
 
   release:
-    name: 🏷️ Surum Yayinla (etiket)
-    if: startsWith(github.ref, 'refs/tags/v')
+    name: 🏷️ Surum Yayinla (main veya etiket)
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     needs: build-and-test
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    concurrency:
+      group: release
+      cancel-in-progress: false
 
     steps:
     - name: 📥 Repoyu Sunucuya Çek
@@ -78,11 +81,22 @@ jobs:
         name: WindOS-Quantum-ISO
         path: release
 
-    - name: 🚀 Surumu olustur (ISO + run.bat)
+    - name: 🚀 Surumu olustur veya guncelle (ISO + run.bat)
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        gh release create "$GITHUB_REF_NAME" \
-          --title "WindOS $GITHUB_REF_NAME" \
-          --notes "Otomatik surum: ISO ve run.bat. Windows'ta ISO'yu run.bat dosyasinin uzerine surukleyin (QEMU gerekir)." \
-          release/WindOS-Quantum.iso run.bat
+        if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+          TAG="$GITHUB_REF_NAME"
+          TITLE="WindOS $TAG"
+        else
+          # main'e her birlesmede ayni "latest-build" surumu yenilenir
+          TAG="latest-build"
+          TITLE="WindOS son derleme (main)"
+          gh release delete "$TAG" --yes --cleanup-tag >/dev/null 2>&1 || true
+        fi
+        NOTES="ISO ve run.bat. Windows'ta ISO'yu run.bat dosyasinin uzerine surukleyin (QEMU gerekir). Kaynak: $GITHUB_SHA"
+        if gh release view "$TAG" >/dev/null 2>&1; then
+          gh release upload "$TAG" release/WindOS-Quantum.iso run.bat --clobber
+        else
+          gh release create "$TAG" --target "$GITHUB_SHA" --title "$TITLE" --notes "$NOTES" release/WindOS-Quantum.iso run.bat
+        fi
