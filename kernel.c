@@ -1109,6 +1109,106 @@ static void nic_init(void){
     NIC_UP = 1;
 }
 
+/* ========================================================================= */
+/* SES: INTEL AC97 SURUCUSU (PCM cikisi, DMA tamponlari)                     */
+/* ========================================================================= */
+/* PCI sinif 04:01 (cokluortam ses). NAM = mikser (BAR0), NABM = DMA (BAR1).
+   Cikis: 16 bit stereo, 48000 Hz. 32 tampon x 2048 kare = ~1.37 sn.        */
+
+#define AC97_FRAMES 2048
+#define AC97_BDL_N  32
+typedef struct { u32 addr; u16 len; u16 ctl; } AcBdl;
+static AcBdl AC_BDL[AC97_BDL_N] __attribute__((aligned(8)));
+static short AC_PCM[AC97_BDL_N][AC97_FRAMES * 2] __attribute__((aligned(16)));
+static u16 AC_NAM = 0, AC_NABM = 0;
+static int AC_UP = 0;
+static int AC_PLAYING = 0;
+static u32 AC_STOP_T = 0;
+
+static void ac97_init(void){
+    PciDev *d = 0;
+    for(int i = 0; i < PCI_N; i++){
+        if(PCI_LIST[i].cls == 0x04 && PCI_LIST[i].sub == 0x01){ d = &PCI_LIST[i]; break; }
+    }
+    if(!d) return;
+    u32 cmd = pci_read32(0, d->dev, d->fn, 0x04);
+    pci_write32(0, d->dev, d->fn, 0x04, (cmd & 0xFFFFu) | 0x5u);   /* I/O + bus master */
+    AC_NAM  = (u16)(d->bar0 & 0xFFFCu);
+    AC_NABM = (u16)(pci_read32(0, d->dev, d->fn, 0x14) & 0xFFC0u);
+    if(!AC_NAM || !AC_NABM) return;
+    outl(AC_NABM + 0x2C, 0x00000002u);                 /* GC: soguk reset cikisi */
+    for(u32 i = 0; i < 500000 && !(inl(AC_NABM + 0x30) & 0x100); i++);  /* GS: codec hazir */
+    outw(AC_NAM + 0x00, 0x0000);                       /* codec reset */
+    outw(AC_NAM + 0x02, 0x0808);                       /* ana ses (sessiz degil, orta) */
+    outw(AC_NAM + 0x18, 0x0808);                       /* PCM cikis sesi */
+    outw(AC_NAM + 0x2C, 48000);                        /* PCM ornekleme hizi */
+    AC_UP = 1;
+}
+
+/* Kare dizisi: kare kare kare dalgasi (genlik 6000), faz tamponlar arasinda surer */
+static void ac97_fill(u32 hz){
+    u32 period = 48000u / hz;
+    if(period < 2) period = 2;
+    static u32 ph = 0;
+    for(int b = 0; b < AC97_BDL_N; b++){
+        for(int f = 0; f < AC97_FRAMES; f++){
+            short v = (ph < period / 2) ? 6000 : -6000;
+            AC_PCM[b][f * 2]     = v;
+            AC_PCM[b][f * 2 + 1] = v;
+            ph = (ph + 1 >= period) ? 0 : ph + 1;
+        }
+        AC_BDL[b].addr = (u32)(unsigned long)AC_PCM[b];
+        AC_BDL[b].len  = AC97_FRAMES * 2;              /* ornek (16 bit) sayisi */
+        AC_BDL[b].ctl  = 0x8000;                       /* IOC: tampon bitince kesme isareti */
+    }
+}
+
+static void ac97_stop(void){
+    if(!AC_UP) return;
+    outb(AC_NABM + 0x1B, 0x00);                        /* PO CR: durdur */
+    AC_PLAYING = 0;
+}
+
+static void ac97_play(u32 hz, u32 ms){
+    if(!AC_UP){ tl_add("SES KARTI YOK: QEMU -device AC97 ile calistirin."); return; }
+    ac97_fill(hz);
+    outb(AC_NABM + 0x1B, 0x02);                        /* PO reset */
+    for(int i = 0; i < 100000 && (inb(AC_NABM + 0x1B) & 0x02); i++);
+    outl(AC_NABM + 0x10, (u32)(unsigned long)AC_BDL);  /* PO BDBAR */
+    outb(AC_NABM + 0x15, AC97_BDL_N - 1);              /* LVI: son tampon */
+    outw(AC_NABM + 0x16, 0x001C);                      /* SR: bayraklari temizle */
+    outb(AC_NABM + 0x1B, 0x01);                        /* RPBM: calistir */
+    AC_PLAYING = 1;
+    u32 ticks = ms * FRAME_HZ / 1000;
+    AC_STOP_T = TICKS + (ticks ? ticks : 1);
+}
+
+/* Kare dongusunde cagrilir: sure dolunca ya da veri bitince durdurur */
+static void ac97_tick(void){
+    if(!AC_PLAYING) return;
+    if(TICKS >= AC_STOP_T || (inb(AC_NABM + 0x1B) & 0x01) == 0) ac97_stop();
+}
+
+static u32 parse_uint(const char *s){
+    u32 v = 0; int d = 0;
+    while(*s >= '0' && *s <= '9' && d < 6){ v = v * 10 + (u32)(*s - '0'); s++; d++; }
+    return d ? v : 0;
+}
+
+/* ses [hz]: 40..4000 Hz arasi kare dalga, 1 sn */
+static void ses_cmd(const char *arg){
+    u32 hz = *arg ? parse_uint(arg) : 440;
+    if(hz < 40 || hz > 4000){ tl_add("GECERSIZ FREKANS (40-4000 HZ)."); return; }
+    if(!AC_UP){ tl_add("SES KARTI YOK: QEMU -device AC97 ile calistirin."); return; }
+    ac97_play(hz, 1000);
+    char line[80], hs[12];
+    dec_str(hz, hs);
+    kcpy(line, "SES: ");
+    kcpy(line + klen(line), hs);
+    kcpy(line + klen(line), " HZ, 1 SN CALISIYOR");
+    tl_add(line);
+}
+
 static void term_exec(void){
     char line[TL_W];
     int n = TIN_LEN;
@@ -1129,7 +1229,7 @@ static void term_exec(void){
     const char *arg = &line[i];
     if(c == 0) return;
 
-    if(str_eq(cmd, "help")){ tl_add("KOMUTLAR: help ver mem echo clear time muzik miku not snake web exit lspci"); tl_add("AG: ping [ip]  (ornek: ping 10.0.2.2)"); }
+    if(str_eq(cmd, "help")){ tl_add("KOMUTLAR: help ver mem echo clear time muzik miku not snake web exit lspci"); tl_add("AG: ping [ip]  (ornek: ping 10.0.2.2)"); tl_add("SES: ses [hz]  (ornek: ses 440)"); }
     else if(str_eq(cmd, "ver"))   tl_add("WindOS 18.1 (x86, 32-bit)");
     else if(str_eq(cmd, "mem")){
         char b[TL_W]; kcpy(b, "FIZIKSEL RAM (MULTIBOOT): ");
@@ -1148,6 +1248,7 @@ static void term_exec(void){
     else if(str_eq(cmd, "exit"))  TERM_OPEN = 0;
     else if(str_eq(cmd, "lspci")) pci_list_to_term();
     else if(str_eq(cmd, "ping"))  ping_cmd(arg);
+    else if(str_eq(cmd, "ses"))   ses_cmd(arg);
     else {
         char b[TL_W];
         app_str(b, "BILINMEYEN KOMUT: ", cmd);
@@ -1593,6 +1694,7 @@ void kernel_main(multiboot_info_t *mbi){
 
     mouse_init(); term_init();
     nic_init();
+    ac97_init();
     timer_init();
 
     while(1){
@@ -1600,6 +1702,7 @@ void kernel_main(multiboot_info_t *mbi){
         ps2_pump();
         mouse_poll();
         nic_poll();
+        ac97_tick();
         for(int ki = 0; ki < 8; ki++) on_key(kbd_poll());
         apps_tick();
         int anim = animating();
