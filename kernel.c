@@ -382,17 +382,6 @@ static void START_MENU(void) {
     circ(sm_x + 50, sm_y + 460, 15, WIN_BLUE); ds(sm_x + 75, sm_y + 455, "ADMIN KULLANICISI", CW, 0, 1);
 }
 
-static void SPOTLIGHT_SEARCH(void) {
-    if(!SPOTLIGHT_OPEN) return;
-    i32 sp_w = 600, sp_h = 60;
-    i32 sp_x = (SW - sp_w) / 2;
-    i32 sp_y = SH / 3;
-    
-    DRAW_GLASS = 1; rr(sp_x, sp_y, sp_w, sp_h, 15, BG_BASE); DRAW_GLASS = 0;
-    rb(sp_x, sp_y, sp_w, sp_h, WIN_BLUE, 2);
-    circ(sp_x + 30, sp_y + 30, 10, CGY); 
-    ds(sp_x + 60, sp_y + 25, "SPOTLIGHT ARAMASI YAPIN... (KAPATMAK ICIN 'S')", CTXT, 0, 1);
-}
 
 static void FILEMGR(void){
     if(!FO) return; 
@@ -952,6 +941,128 @@ static void BROWSER_APP(void){
     }
 }
 
+/* ---- Spotlight: uygulama ve ayar aramasi ----
+   '/' tusu (odak yokken) veya ust cubuktaki arama simgesi acar.
+   Yazdikca eslesen kayitlar listelenir; Yukari/Asagi ile secilir,
+   Enter ile acilir, ESC ile kapanir. Eslesme buyuk/kucuk harf duyarsizdir. */
+typedef struct { const char *name; const char *kw; const char *tag; } SpEntry;
+/* Sira onemli: sp_run() icindeki durum degerleriyle ayni sirada olmali */
+static const SpEntry SP_APPS[] = {
+    { "DOSYALAR",         "dosya file finder",            "UYGULAMA" },
+    { "TERMINAL",         "terminal komut cmd shell",     "UYGULAMA" },
+    { "MUZIK",            "muzik music ses melodi",       "UYGULAMA" },
+    { "MIKU",             "miku kart card",               "UYGULAMA" },
+    { "NOT DEFTERI",      "not notepad yazi",             "UYGULAMA" },
+    { "YILAN OYUNU",      "yilan snake oyun game",        "UYGULAMA" },
+    { "TARAYICI",         "tarayici browser web internet","UYGULAMA" },
+    { "GOREV YONETICISI", "gorev task manager",           "UYGULAMA" },
+    { "WINDAI",           "ai asistan yapay zeka",        "UYGULAMA" },
+    { "SISTEM AYARLARI",  "sistem ayar settings",         "AYAR" },
+    { "EKRAN AYARLARI",   "ekran ayar display settings",  "AYAR" },
+};
+#define SP_N    ((int)(sizeof(SP_APPS) / sizeof(SP_APPS[0])))
+#define SP_ROWS 6
+static char SP_BUF[32];
+static int  SP_LEN = 0, SP_SEL = 0;
+
+static int sp_fold(int c){ return (c >= 'A' && c <= 'Z') ? c + 32 : c; }
+/* needle, hay icinde (buyuk/kucuk harf duyarsiz) geciyor mu */
+static int sp_has(const char *hay, const char *needle){
+    if(!*needle) return 1;
+    for(const char *h = hay; *h; h++){
+        const char *a = h, *n = needle;
+        while(*n && *a && sp_fold((unsigned char)*a) == sp_fold((unsigned char)*n)){ a++; n++; }
+        if(!*n) return 1;
+    }
+    return 0;
+}
+/* Eslesen kayit indekslerini out'a yazar, sayisini dondurur */
+static int sp_collect(int *out){
+    int n = 0;
+    for(int i = 0; i < SP_N; i++)
+        if(sp_has(SP_APPS[i].name, SP_BUF) || sp_has(SP_APPS[i].kw, SP_BUF)) out[n++] = i;
+    return n;
+}
+
+static void sp_run(int i){
+    switch(i){
+        case 0:  FO = 1; break;                                   /* DOSYALAR */
+        case 1:  TERM_OPEN = 1; FOCUS = 1; break;                 /* TERMINAL */
+        case 2:  MUS_OPEN = 1; mus_start(0); break;               /* MUZIK */
+        case 3:  MIKU_OPEN = 1; break;                            /* MIKU */
+        case 4:  NOTE_OPEN = 1; FOCUS = 2; break;                 /* NOT DEFTERI */
+        case 5:  snake_open(); break;                             /* YILAN OYUNU */
+        case 6:  BR_OPEN = 1; FOCUS = 4; break;                   /* TARAYICI */
+        case 7:  TASKMGR_OPEN = 1; break;                         /* GOREV YONETICISI */
+        case 8:  AI_OPEN = 1; break;                              /* WINDAI */
+        case 9:  SYS_OPEN = 1; break;                             /* SISTEM AYARLARI */
+        case 10: DISP_OPEN = 1; break;                            /* EKRAN AYARLARI */
+        default: break;
+    }
+    SPOTLIGHT_OPEN = 0;
+}
+
+static void sp_open(void){
+    SPOTLIGHT_OPEN = 1; START_MENU_OPEN = 0;
+    SP_LEN = 0; SP_BUF[0] = 0; SP_SEL = 0;
+}
+
+static void sp_key(u8 c){
+    int hits[SP_N];
+    if(c == 27){ SPOTLIGHT_OPEN = 0; return; }
+    if(c == KEY_UP){ if(SP_SEL > 0) SP_SEL--; return; }
+    if(c == KEY_DOWN){ SP_SEL++; return; }           /* ust siniri cizimde kesilir */
+    if(c == '\n'){
+        int n = sp_collect(hits);
+        if(n > 0){ if(SP_SEL >= n) SP_SEL = n - 1; sp_run(hits[SP_SEL]); }
+        return;
+    }
+    if(c == 8){ if(SP_LEN > 0){ SP_BUF[--SP_LEN] = 0; SP_SEL = 0; } return; }
+    if(c >= 32 && c < 127 && SP_LEN < 30){
+        SP_BUF[SP_LEN++] = (char)c; SP_BUF[SP_LEN] = 0; SP_SEL = 0;
+    }
+}
+
+static void SPOTLIGHT_SEARCH(void){
+    if(!SPOTLIGHT_OPEN) return;
+    int hits[SP_N];
+    int n = sp_collect(hits);
+    if(SP_SEL >= n) SP_SEL = (n > 0) ? n - 1 : 0;
+    i32 sp_w = 600, sp_h = 60;
+    i32 sp_x = ((i32)SW - sp_w) / 2;
+    i32 sp_y = (i32)SH / 3;
+    i32 rows = n < SP_ROWS ? n : SP_ROWS;
+
+    DRAW_GLASS = 1; rr(sp_x, sp_y, sp_w, sp_h, 15, BG_BASE); DRAW_GLASS = 0;
+    rb(sp_x, sp_y, sp_w, sp_h, WIN_BLUE, 2);
+    circ(sp_x + 30, sp_y + 30, 10, CGY);
+    if(SP_LEN == 0){
+        ds(sp_x + 60, sp_y + 25, "ARA: UYGULAMA VEYA AYAR", CGY, 0, 1);
+    } else {
+        ds(sp_x + 60, sp_y + 25, SP_BUF, CTXT, 0, 1);
+        ds(sp_x + 60 + 8 * SP_LEN, sp_y + 25, "|", WIN_BLUE, 0, 1);
+    }
+
+    i32 py = sp_y + sp_h + 6;
+    if(rows > 0){
+        i32 ph = rows * 34 + 12;
+        DRAW_GLASS = 1; rr(sp_x, py, sp_w, ph, 15, BG_BASE); DRAW_GLASS = 0;
+        rb(sp_x, py, sp_w, ph, PAN_BD, 1);
+        for(i32 r = 0; r < rows; r++){
+            const SpEntry *e = &SP_APPS[hits[r]];
+            i32 ry = py + 6 + r * 34;
+            int sel = (r == SP_SEL);
+            if(sel) rr(sp_x + 8, ry, sp_w - 16, 30, 8, WIN_BLUE);
+            ds(sp_x + 24, ry + 11, e->name, sel ? CW : CTXT, 0, 1);
+            ds(sp_x + sp_w - 110, ry + 11, e->tag, sel ? CW : CGY, 0, 1);
+            if(CLK(sp_x + 8, ry, sp_w - 16, 30)){ sp_run(hits[r]); return; }
+        }
+    } else if(SP_LEN > 0){
+        DRAW_GLASS = 1; rr(sp_x, py, sp_w, 40, 15, BG_BASE); DRAW_GLASS = 0;
+        ds(sp_x + 24, py + 14, "SONUC YOK", CGY, 0, 1);
+    }
+}
+
 static void close_focused(void){
     if(FOCUS==1) TERM_OPEN = 0;
     else if(FOCUS==2) NOTE_OPEN = 0;
@@ -965,6 +1076,8 @@ static void apps_tick(void){ mus_tick(); snake_tick(); }
 
 static void on_key(u8 c){
     if(!c) return;
+    if(SPOTLIGHT_OPEN){ sp_key(c); return; }
+    if(c=='/' && FOCUS==0){ sp_open(); return; }
     if(c==27){ close_focused(); return; }
     if(FOCUS==1 && TERM_OPEN){ term_key(c); return; }
     if(FOCUS==2 && NOTE_OPEN){ note_key(c); return; }
@@ -979,6 +1092,9 @@ static void DESKTOP(void){
     DRAW_GLASS = 1; fr(0, 0, SW, 25, PAN_BG); DRAW_GLASS = 0;
     ds(15, 8, "[ APPLE LOGO ]   WINDOS   DOSYA   DUZENLE   GIT   PENCERE   YARDIM", CTXT, 0, 1);
     ds(SW-180, 8, "22 SUBAT | 10:26 PM", CW, 0, 1);
+    /* Arama simgesi: Spotlight'i acar/kapatir */
+    circ((i32)SW-212, 10, 5, CW); circ((i32)SW-212, 10, 3, PAN_BG); fr((i32)SW-208, 14, 4, 2, CW);
+    if(CLK((i32)SW-222, 2, 24, 21)){ if(SPOTLIGHT_OPEN) SPOTLIGHT_OPEN = 0; else sp_open(); }
     
     /* WINDOWS 11 DOCK */
     i32 dock_w = 725; i32 dock_x = (SW - dock_w) / 2; i32 dock_y = SH - 80;
