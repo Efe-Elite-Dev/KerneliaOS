@@ -27,7 +27,10 @@ iso: kernel.bin grub.cfg
 	grub-mkrescue -o windos.iso iso
 	rm -rf iso
 
+run: iso
+	./run.sh windos.iso
+
 clean:
 	rm -rf boot.o kernel.o kernel.bin iso windos.iso
 
-.PHONY: all iso clean
+.PHONY: all iso run clean
