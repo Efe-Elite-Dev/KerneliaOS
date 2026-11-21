@@ -37,6 +37,8 @@ static int START_MENU_OPEN = 0;
 static int SPOTLIGHT_OPEN = 0;
 static int TASKMGR_OPEN = 0;
 static int TERM_OPEN = 0;
+/* Klavye odagi: 0 yok, 1 terminal, 2 not defteri, 3 yilan */
+static int FOCUS = 0;
 static int FO = 0, CHROME_OPEN = 0, DISP_OPEN = 0, SYS_OPEN = 0, AI_OPEN = 0;
 static i32 FX = 100, FY = 80, FD = 0, FDX = 0, FDY = 0;
 static i32 CX = 150, CY = 100, CD = 0, CDX = 0, CDY = 0; 
@@ -190,16 +192,53 @@ static void swap_buffers(void) {
 static const char SCMAP[128]={ 0,27,'1','2','3','4','5','6','7','8','9','0','-','=',8,'\t','Q','W','E','R','T','Y','U','I','O','P','[',']','\n',0,'A','S','D','F','G','H','J','K','L',';','\'','`',0,'\\','Z','X','C','V','B','N','M',',','.','/',0,'*',0,' ',0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,'-',0,0,0,'+',0,0,0,0,0,0,0,0,0 };
 static u8 K_SH=0, K_CP=0, K_ALT=0;
 
-static u8 kbd_poll(void){ 
-    u8 st=inb(0x64); if(!(st&0x01)) return 0; if((st&0x20)){ inb(0x60); return 0; } u8 sc=inb(0x60); 
-    if(sc == 0x38) { K_ALT = 1; return 0; } 
-    if(sc == 0xB8) { K_ALT = 0; return 0; } 
-    if(sc&0x80){ u8 r=sc&0x7F; if(r==0x2A||r==0x36) K_SH=0; return 0; } 
-    if(sc==0x2A||sc==0x36){K_SH=1;return 0;} if(sc==0x3A){K_CP=!K_CP;return 0;} if(sc>=128) return 0; 
-    char c=SCMAP[sc]; if(!c) return 0; 
-    
-    if(c == 's' || c == 'S') { SPOTLIGHT_OPEN = !SPOTLIGHT_OPEN; return 0; }
-    /* Harf tuslari ekrani cevirmez; yon ayari Ekran Yoneticisi'nden yapilir */
+/* PS/2 veri portu (0x60) tek yerden okunur; baytlar klavye/fare kuyruguna ayrilir */
+static u8 KQ[64], MQ[64];
+static int KQH=0, KQT=0, MQH=0, MQT=0;
+static void ps2_pump(void){
+    for(int n=0; n<64; n++){
+        u8 st = inb(0x64);
+        if(!(st & 0x01)) break;
+        u8 d = inb(0x60);
+        if(st & 0x20){ int nt=(MQT+1)&63; if(nt!=MQH){ MQ[MQT]=d; MQT=nt; } }
+        else         { int nt=(KQT+1)&63; if(nt!=KQH){ KQ[KQT]=d; KQT=nt; } }
+    }
+}
+static int kq_pop(u8 *d){ if(KQH==KQT) return 0; *d=KQ[KQH]; KQH=(KQH+1)&63; return 1; }
+static int mq_pop(u8 *d){ if(MQH==MQT) return 0; *d=MQ[MQH]; MQH=(MQH+1)&63; return 1; }
+
+/* Ozel tus kodlari (ASCII disi): ok tuslari */
+#define KEY_UP    0x81
+#define KEY_DOWN  0x82
+#define KEY_LEFT  0x83
+#define KEY_RIGHT 0x84
+
+/* Bir tus olayi dondurur: ASCII karakter, ok kodu veya 0 (olay yok). */
+static u8 kbd_poll(void){
+    static int ext = 0;
+    u8 sc; if(!kq_pop(&sc)) return 0;
+    if(sc == 0xE0) { ext = 1; return 0; }
+    if(sc == 0x38) { K_ALT = 1; ext = 0; return 0; }
+    if(sc == 0xB8) { K_ALT = 0; ext = 0; return 0; }
+    if(sc&0x80){
+        u8 r=sc&0x7F;
+        if(r==0x2A||r==0x36) K_SH=0;
+        ext = 0; return 0;
+    }
+    if(ext){
+        ext = 0;
+        if(sc==0x48) return KEY_UP;
+        if(sc==0x50) return KEY_DOWN;
+        if(sc==0x4B) return KEY_LEFT;
+        if(sc==0x4D) return KEY_RIGHT;
+        return 0;
+    }
+    if(sc==0x2A||sc==0x36){K_SH=1;return 0;}
+    if(sc==0x3A){K_CP=!K_CP;return 0;}
+    if(sc>=128) return 0;
+    char c=SCMAP[sc]; if(!c) return 0;
+    /* Harfler: Shift xor CapsLock ile buyuk, aksi halde kucuk */
+    if(c>='A' && c<='Z' && !(K_SH ^ K_CP)) c = (char)(c + 32);
     return (u8)c;
 }
 
@@ -215,10 +254,7 @@ static void mouse_poll(void){
     if(!MOUSE_READY) return; 
     int safety_limit = 256; 
     while(safety_limit--){ 
-        u8 st = inb(0x64); 
-        if(!(st & 0x01)) break; 
-        if(!(st & 0x20)){ inb(0x60); continue; } 
-        u8 dat = inb(0x60); 
+        u8 dat; if(!mq_pop(&dat)) break; 
         switch(MCY){ 
             case 0: if(!(dat & 0x08)) { MCY = 0; continue; } MBF[0] = (i8)dat; MCY = 1; break; 
             case 1: MBF[1] = (i8)dat; MCY = 2; break; 
@@ -304,34 +340,6 @@ static void DRAW_WINDOW(i32 x, i32 y, i32 w, i32 h, const char* title, u32 b_col
     }
 }
 
-static void TERMINAL_APP(void) {
-    if(!TERM_OPEN) return;
-    i32 cw=650, ch=450, cx=CX, cy=CY;
-    if(!CD&&MLB&&!PMLB&&MY>=cy&&MY<cy+35&&MX>=cx&&MX<cx+cw-40){CD=1;CDX=MX-cx;CDY=MY-cy;}
-    if(CD){ if(MLB){ CX=MX-CDX; CY=MY-CDY; if(CX<0)CX=0; if(CY<0)CY=0; if(CX>(i32)SW-cw)CX=(i32)SW-cw; if(CY>(i32)SH-ch)CY=(i32)SH-ch; } else CD=0; }
-    
-    DRAW_WINDOW(cx, cy, cw, ch, "WIND-TERM (LINUX TERMINAL)", SAFE_BLK);
-    
-    ds(cx+20, cy+60, "   /\\   ", WIN_BLUE, 0, 1);
-    ds(cx+20, cy+75, "  /  \\  ", WIN_BLUE, 0, 1);
-    ds(cx+20, cy+90, " /____\\ ", WIN_BLUE, 0, 1);
-    ds(cx+20, cy+105," \\    / ", WIN_BLUE, 0, 1);
-    ds(cx+20, cy+120,"  \\  /  ", WIN_BLUE, 0, 1);
-    ds(cx+20, cy+135,"   \\/   ", WIN_BLUE, 0, 1);
-
-    ds(cx+120, cy+60, "EFE@WINDOS-V18", LIN_ORG, 0, 1);
-    ds(cx+120, cy+70, "--------------", CTXT, 0, 1);
-    ds(cx+120, cy+85, "OS: WINDOS OMEGA-HYBRID", CW, 0, 1);
-    ds(cx+120, cy+105,"KERNEL: 32-BIT TITANIUM", CW, 0, 1);
-    ds(cx+120, cy+125,"UPTIME: 22 MINS", CW, 0, 1);
-    char buf[64]; kcpy(buf, "RAM: 142 MB / "); itoa((int)SYS_RAM_MB, buf + klen(buf)); kcpy(buf + klen(buf), " MB");
-    ds(cx+120, cy+145, buf, CW, 0, 1);
-    ds(cx+120, cy+165,"DE: AQUA (WIN+MAC)", CW, 0, 1);
-    ds(cx+120, cy+185,"DEVICE: POCO M8 PRO", CW, 0, 1);
-    
-    ds(cx+20, cy+240, "EFE@WINDOS:~$ _", CGN, 0, 1);
-}
-
 static void TASKMGR_APP(void) {
     if(!TASKMGR_OPEN) return;
     DRAW_WINDOW(300, 150, 400, 300, "GOREV YONETICISI (WINDOWS)", PAN_BG);
@@ -364,7 +372,7 @@ static void START_MENU(void) {
     if(CLK(sm_x + 50, sm_y + 70, 60, 60)) { FO = 1; START_MENU_OPEN = 0; }
     
     rr(sm_x + 170, sm_y + 70, 60, 60, 12, LIN_ORG); ds(sm_x + 175, sm_y + 140, "TERMINAL", CTXT, 0, 1);
-    if(CLK(sm_x + 170, sm_y + 70, 60, 60)) { TERM_OPEN = 1; START_MENU_OPEN = 0; }
+    if(CLK(sm_x + 170, sm_y + 70, 60, 60)) { TERM_OPEN = 1; FOCUS = 1; START_MENU_OPEN = 0; }
 
     rr(sm_x + 290, sm_y + 70, 60, 60, 12, CRD); ds(sm_x + 290, sm_y + 140, "GOREV YON", CTXT, 0, 1);
     if(CLK(sm_x + 290, sm_y + 70, 60, 60)) { TASKMGR_OPEN = 1; START_MENU_OPEN = 0; }
@@ -460,6 +468,326 @@ static void WINDAI_ASSISTANT(void) {
     rr(ax+20, ah+ay-50, aw-40, 35, 17, PAN_BG); ds(ax+35, ah+ay-38, "BIR SEYLER YAZIN... (SIMULASYON MODU)", CGY, 0, 1); circ(ax+aw-40, ah+ay-32, 12, AI_PURP); ds(ax+aw-44, ah+ay-36, ">", CW, 0, 1);
 }
 
+/* =========================================================================== */
+/* UYGULAMALAR: TERMINAL, MUZIK, MIKU KARTI, NOT DEFTERI, YILAN                */
+/* =========================================================================== */
+
+
+/* ---- PC hoparlorunu PIT kanal 2 ile calistirir (ses karti gerekmez) ---- */
+static void spk_set(u32 hz){
+    if(hz==0){ outb(0x61, inb(0x61) & 0xFC); return; }
+    u32 div = 1193182u / hz;
+    if(div==0) div = 1;
+    if(div>0xFFFF) div = 0xFFFF;
+    outb(0x43, 0xB6);
+    outb(0x42, (u8)(div & 0xFF));
+    outb(0x42, (u8)((div >> 8) & 0xFF));
+    u8 v = inb(0x61);
+    if((v & 3) != 3) outb(0x61, (u8)(v | 3));
+}
+
+/* ---- MUZIK CALAR ---- */
+typedef struct { u16 hz; u8 frames; } Note;
+#define NUM_TRACKS 2
+#define TRK_LEN    8
+static const Note MEL1[TRK_LEN] = {{523,20},{587,20},{659,20},{784,20},{659,20},{587,20},{523,40},{0,10}};
+static const Note MEL2[TRK_LEN] = {{440,18},{494,18},{523,18},{659,36},{587,18},{523,18},{494,36},{0,8}};
+static const Note *TRK_NOTES[NUM_TRACKS] = { MEL1, MEL2 };
+static const char *TRK_NAME[NUM_TRACKS]  = { "MELODI 1", "MELODI 2" };
+static int MUS_TRACK=0, MUS_IDX=0, MUS_LEFT=0, MUS_PLAYING=0, MUS_OPEN=0;
+
+static void mus_start(int t){ MUS_TRACK=t; MUS_IDX=0; MUS_LEFT=0; MUS_PLAYING=1; }
+static void mus_stop(void){ MUS_PLAYING=0; MUS_IDX=0; MUS_LEFT=0; spk_set(0); }
+
+/* Her kare bir adim: tempo kare sayisina baglidir */
+static void mus_tick(void){
+    if(!MUS_PLAYING) return;
+    if(MUS_LEFT>0){ MUS_LEFT--; return; }
+    if(MUS_IDX>=TRK_LEN){ mus_stop(); return; }
+    const Note *n = &TRK_NOTES[MUS_TRACK][MUS_IDX];
+    spk_set(n->hz);
+    MUS_LEFT = (int)n->frames - 1;
+    MUS_IDX++;
+}
+
+static void MUSIC_APP(void){
+    if(!MUS_OPEN) return;
+    const i32 wx=40, wy=400, ww=420, wh=270;
+    DRAW_WINDOW(wx, wy, ww, wh, "MUZIK CALAR", PAN_BG);
+    if(CLK(wx+14, wy+11, 12, 12)){ MUS_OPEN=0; mus_stop(); return; }
+
+    ds(wx+20, wy+50, "PARCA:", CGY, 0, 1);
+    ds(wx+80, wy+50, TRK_NAME[MUS_TRACK], CW, 0, 1);
+    ds(wx+20, wy+68, MUS_PLAYING ? "DURUM: CALIYOR" : "DURUM: DURDU", MUS_PLAYING ? CHR_GRN : CGY, 0, 1);
+    i32 prog = (MUS_IDX * 360) / TRK_LEN;
+    rr(wx+20, wy+90, 360, 10, 4, PAN_BD);
+    if(prog>0) rr(wx+20, wy+90, prog, 10, 4, CHR_GRN);
+
+    rr(wx+20, wy+115, 110, 32, 6, CHR_GRN);
+    ds(wx+36, wy+127, MUS_PLAYING ? "DURAKLAT" : "CAL", CK, 0, 1);
+    if(CLK(wx+20, wy+115, 110, 32)){ if(MUS_PLAYING) mus_stop(); else mus_start(MUS_TRACK); }
+
+    rr(wx+140, wy+115, 110, 32, 6, CRD);
+    ds(wx+160, wy+127, "DURDUR", CW, 0, 1);
+    if(CLK(wx+140, wy+115, 110, 32)) mus_stop();
+
+    rr(wx+260, wy+115, 140, 32, 6, WIN_BLUE);
+    ds(wx+272, wy+127, "SONRAKI PARCA", CW, 0, 1);
+    if(CLK(wx+260, wy+115, 140, 32)) mus_start((MUS_TRACK+1)%NUM_TRACKS);
+
+    ds(wx+20, wy+165, "CALMA LISTESI (tiklayin):", CGY, 0, 1);
+    for(int t=0;t<NUM_TRACKS;t++){
+        i32 ty = wy+185 + t*20;
+        rr(wx+20, ty, 360, 16, 4, t==MUS_TRACK ? PAN_BD : PAN_BG);
+        ds(wx+30, ty+4, TRK_NAME[t], t==MUS_TRACK ? CW : CTXT, 0, 1);
+        if(CLK(wx+20, ty, 360, 16)) mus_start(t);
+    }
+    ds(wx+20, wy+wh-22, "PC hoparlorunden kare dalga; ses karti yok.", CGY, 0, 1);
+}
+
+/* ---- MIKU ICERIK KARTI (yerlesik, dosya yok) ---- */
+static int MIKU_OPEN=0, MIKU_MOOD=0, MIKU_T=0;
+
+static void MIKU_APP(void){
+    if(!MIKU_OPEN) return;
+    const i32 wx=420, wy=60, ww=340, wh=330;
+    const u32 TEAL = 0xFF39C5BBu;
+    DRAW_WINDOW(wx, wy, ww, wh, "MIKU ICERIK KARTI", PAN_BG);
+    if(CLK(wx+14, wy+11, 12, 12)){ MIKU_OPEN=0; return; }
+
+    rr(wx+20, wy+50, ww-40, 190, 14, TEAL);
+    i32 ph  = MIKU_T % 40;
+    i32 off = ph < 20 ? ph : 40 - ph;
+    circ(wx+ww/2, wy+95+off, 22, CW);
+    circ(wx+ww/2-8, wy+91+off, 3, CK);
+    circ(wx+ww/2+8, wy+91+off, 3, CK);
+    const char *msg = MIKU_MOOD==0 ? "Merhaba!" : (MIKU_MOOD==1 ? "Muzik zamani!" : "Zzz...");
+    dsc(wx+20, wy+195, ww-40, msg, CK, 0, 1);
+    if(CLK(wx+20, wy+50, ww-40, 190)) MIKU_MOOD = (MIKU_MOOD+1)%3;
+
+    ds(wx+20, wy+255, "Karta tikla: ruh hali degisir.", CGY, 0, 1);
+    ds(wx+20, wy+268, "Dosya yok, yerlesik icerik.", CGY, 0, 1);
+    rr(wx+20, wy+290, 170, 26, 6, WIN_BLUE);
+    ds(wx+30, wy+299, "MELODI 1 CAL", CW, 0, 1);
+    if(CLK(wx+20, wy+290, 170, 26)){ MUS_OPEN=1; mus_start(0); MIKU_MOOD=1; }
+    MIKU_T++;
+}
+
+/* ---- NOT DEFTERI ---- */
+static char NOTE_BUF[512];
+static int  NOTE_LEN=0, NOTE_OPEN=0;
+
+static void note_key(u8 c){
+    if(c==8){ if(NOTE_LEN>0) NOTE_LEN--; return; }
+    if(c=='\r') c = '\n';
+    if(c=='\n' || (c>=32 && c<127)){
+        if(NOTE_LEN < (int)sizeof(NOTE_BUF)-1) NOTE_BUF[NOTE_LEN++] = (char)c;
+    }
+}
+
+static void NOTES_APP(void){
+    if(!NOTE_OPEN) return;
+    const i32 wx=660, wy=60, ww=300, wh=300;
+    DRAW_WINDOW(wx, wy, ww, wh, "NOT DEFTERI", PAN_BG);
+    if(CLK(wx+14, wy+11, 12, 12)){ NOTE_OPEN=0; return; }
+    if(MLB && !PMLB && HOV(wx, wy, ww, wh)) FOCUS = 2;
+
+    rr(wx+12, wy+46, ww-24, wh-58, 8, SAFE_BLK);
+    const i32 maxcol = (ww-40)/8;
+    i32 x = wx+20, y = wy+54, col = 0;
+    for(int i=0;i<NOTE_LEN;i++){
+        char ch = NOTE_BUF[i];
+        if(ch=='\n' || col>=maxcol){ x = wx+20; y += 12; col = 0; if(ch=='\n') continue; }
+        if(y > wy+wh-24) break;
+        dc(x, y, ch, CTXT, 0, 1);
+        x += 8; col++;
+    }
+    if(FOCUS==2 && y <= wy+wh-24) dc(x, y, '_', CGN, 0, 1);
+}
+
+/* ---- YILAN OYUNU ---- */
+#define SN_W    24
+#define SN_H    16
+#define SN_CELL 12
+static int SN_OPEN=0, SN_LEN=0, SN_DIR=1, SN_DEAD=0, SN_SCORE=0, SN_TICK=0, SN_FX=0, SN_FY=0;
+static int SN_X[SN_W*SN_H], SN_Y[SN_W*SN_H];
+static u32 SN_RND = 12345u;
+
+static int sn_rand(int n){ SN_RND = SN_RND*1103515245u + 12345u; return (int)((SN_RND>>16) % (u32)n); }
+static int sn_on(int x, int y){ for(int i=0;i<SN_LEN;i++) if(SN_X[i]==x && SN_Y[i]==y) return 1; return 0; }
+static void sn_food(void){ int x, y; do { x = sn_rand(SN_W); y = sn_rand(SN_H); } while(sn_on(x,y)); SN_FX = x; SN_FY = y; }
+static void sn_reset(void){
+    SN_LEN=3; SN_DIR=1; SN_DEAD=0; SN_SCORE=0; SN_TICK=0;
+    for(int i=0;i<SN_LEN;i++){ SN_X[i] = 6-i; SN_Y[i] = 8; }
+    sn_food();
+}
+static void snake_open(void){ SN_OPEN=1; sn_reset(); FOCUS=3; }
+
+static void sn_key(u8 c){
+    if(c==KEY_UP    && SN_DIR!=2) SN_DIR=0;
+    else if(c==KEY_RIGHT && SN_DIR!=3) SN_DIR=1;
+    else if(c==KEY_DOWN  && SN_DIR!=0) SN_DIR=2;
+    else if(c==KEY_LEFT  && SN_DIR!=1) SN_DIR=3;
+    else if(c=='r' && SN_DEAD) sn_reset();
+}
+
+static void sn_step(void){
+    if(SN_DEAD) return;
+    int hx = SN_X[0], hy = SN_Y[0];
+    if(SN_DIR==0) hy--; else if(SN_DIR==1) hx++; else if(SN_DIR==2) hy++; else hx--;
+    if(hx<0 || hy<0 || hx>=SN_W || hy>=SN_H){ SN_DEAD=1; return; }
+    if(sn_on(hx, hy)){ SN_DEAD=1; return; }
+    int ate = (hx==SN_FX && hy==SN_FY);
+    if(ate && SN_LEN < SN_W*SN_H-1){ SN_LEN++; SN_SCORE++; }
+    for(int i=SN_LEN-1;i>0;i--){ SN_X[i] = SN_X[i-1]; SN_Y[i] = SN_Y[i-1]; }
+    SN_X[0] = hx; SN_Y[0] = hy;
+    if(ate) sn_food();
+}
+
+static void snake_tick(void){
+    if(!SN_OPEN) return;
+    if(++SN_TICK >= 6){ SN_TICK = 0; sn_step(); }
+}
+
+static void SNAKE_APP(void){
+    if(!SN_OPEN) return;
+    const i32 wx=640, wy=360, ww=360, wh=290;
+    DRAW_WINDOW(wx, wy, ww, wh, "YILAN OYUNU", PAN_BG);
+    if(CLK(wx+14, wy+11, 12, 12)){ SN_OPEN=0; return; }
+    if(MLB && !PMLB && HOV(wx, wy, ww, wh)) FOCUS = 3;
+
+    const i32 gx = wx+20, gy = wy+46, cs = SN_CELL;
+    fr(gx, gy, SN_W*cs, SN_H*cs, SAFE_BLK);
+    fr(gx + SN_FX*cs + 2, gy + SN_FY*cs + 2, cs-4, cs-4, CRD);
+    for(int i=0;i<SN_LEN;i++)
+        fr(gx + SN_X[i]*cs + 1, gy + SN_Y[i]*cs + 1, cs-2, cs-2, i==0 ? CHR_GRN : CGN);
+
+    char b[32]; kcpy(b, "SKOR: "); itoa(SN_SCORE, b + klen(b));
+    ds(wx+20, wy+250, b, CTXT, 0, 1);
+    ds(wx+20, wy+264, "Ok tuslari: yon. R: yeniden basla", CGY, 0, 1);
+    if(SN_DEAD){
+        ds(gx+60, gy+80, "OYUN BITTI", CRD, 0, 1);
+        ds(gx+24, gy+100, "R ile yeniden basla", CW, 0, 1);
+    }
+}
+
+/* ---- TERMINAL ---- */
+#define TL_MAX 24
+#define TL_W   80
+static char TLINES[TL_MAX][TL_W];
+static int  TL_N = 0;
+static char TIN[TL_W];
+static int  TIN_LEN = 0;
+
+/* Gecmise satir ekler; dolunca en eski satiri atar */
+static void tl_add(const char *s){
+    int slot;
+    if(TL_N < TL_MAX){ slot = TL_N++; }
+    else {
+        for(int i=1;i<TL_MAX;i++) for(int j=0;j<TL_W;j++) TLINES[i-1][j] = TLINES[i][j];
+        slot = TL_MAX-1;
+    }
+    int i=0;
+    while(s[i] && i<TL_W-1){ TLINES[slot][i] = s[i]; i++; }
+    TLINES[slot][i] = 0;
+}
+
+/* a+b'yi sinirli olarak dst'ye yazar */
+static void app_str(char *dst, const char *a, const char *b){
+    int k=0;
+    while(a[k] && k<TL_W-1){ dst[k]=a[k]; k++; }
+    int j=0;
+    while(b[j] && k<TL_W-1){ dst[k++]=b[j++]; }
+    dst[k]=0;
+}
+
+static int str_eq(const char *a, const char *b){ while(*a && *a==*b){ a++; b++; } return *a==*b; }
+
+static void term_exec(void){
+    char line[TL_W];
+    int n = TIN_LEN;
+    for(int i=0;i<n;i++) line[i] = TIN[i];
+    line[n] = 0;
+
+    /* Giris satirini gecmise yaz */
+    char pr[TL_W];
+    app_str(pr, "EFE@WINDOS:~$ ", line);
+    tl_add(pr);
+    TIN_LEN = 0;
+
+    int i=0, c=0;
+    char cmd[TL_W];
+    while(i<n && line[i]==' ') i++;
+    while(i<n && line[i]!=' ' && c<TL_W-1) cmd[c++] = line[i++];
+    cmd[c] = 0;
+    while(i<n && line[i]==' ') i++;
+    const char *arg = &line[i];
+    if(c==0) return;
+
+    if(str_eq(cmd, "help"))        tl_add("KOMUTLAR: help ver mem echo clear time muzik miku not snake");
+    else if(str_eq(cmd, "ver"))    tl_add("WindOS 18.0 OMEGA-CORE (x86, 32-bit)");
+    else if(str_eq(cmd, "mem")){
+        char b[TL_W]; kcpy(b, "FIZIKSEL RAM (MULTIBOOT): ");
+        itoa((int)SYS_RAM_MB, b + klen(b)); kcpy(b + klen(b), " MB");
+        tl_add(b);
+    }
+    else if(str_eq(cmd, "echo"))   tl_add(arg);
+    else if(str_eq(cmd, "clear"))  TL_N = 0;
+    else if(str_eq(cmd, "time"))   tl_add("SAAT DONANIMI (RTC) HENUZ SURUCU DEGIL.");
+    else if(str_eq(cmd, "muzik"))  { MUS_OPEN = 1; mus_start(0); }
+    else if(str_eq(cmd, "miku"))   MIKU_OPEN = 1;
+    else if(str_eq(cmd, "not"))    { NOTE_OPEN = 1; FOCUS = 2; }
+    else if(str_eq(cmd, "snake"))  snake_open();
+    else {
+        char b[TL_W];
+        app_str(b, "BILINMEYEN KOMUT: ", cmd);
+        tl_add(b);
+    }
+}
+
+static void term_key(u8 c){
+    if(c==8){ if(TIN_LEN>0) TIN_LEN--; return; }
+    if(c=='\n' || c=='\r'){ term_exec(); return; }
+    if(c>=32 && c<127 && TIN_LEN < 60) TIN[TIN_LEN++] = (char)c;
+}
+
+static void term_init(void){
+    tl_add("WindOS 18.0 OMEGA-CORE. 'help' yazip Enter'a bas.");
+}
+
+static void TERMINAL_APP(void) {
+    if(!TERM_OPEN) return;
+    i32 cw=650, ch=450, cx=CX, cy=CY;
+    if(!CD&&MLB&&!PMLB&&MY>=cy&&MY<cy+35&&MX>=cx&&MX<cx+cw-40){CD=1;CDX=MX-cx;CDY=MY-cy;}
+    if(CD){ if(MLB){ CX=MX-CDX; CY=MY-CDY; if(CX<0)CX=0; if(CY<0)CY=0; if(CX>(i32)SW-cw)CX=(i32)SW-cw; if(CY>(i32)SH-ch)CY=(i32)SH-ch; } else CD=0; }
+
+    DRAW_WINDOW(cx, cy, cw, ch, "WIND-TERM (LINUX TERMINAL)", SAFE_BLK);
+    if(CLK(cx+14, cy+11, 12, 12)){ TERM_OPEN=0; return; }
+    if(MLB && !PMLB && HOV(cx, cy, cw, ch)) FOCUS = 1;
+
+    const i32 visible = (ch - 80) / 12;
+    const i32 start = TL_N > visible ? TL_N - visible : 0;
+    for(i32 i=start;i<TL_N;i++) ds(cx+16, cy+46+(i-start)*12, TLINES[i], CTXT, 0, 1);
+
+    char pr[TL_W];
+    app_str(pr, "EFE@WINDOS:~$ ", "");
+    int k = (int)klen(pr);
+    for(int i=0;i<TIN_LEN && k<TL_W-2;i++) pr[k++] = TIN[i];
+    if(FOCUS==1 && k<TL_W-1) pr[k++] = '_';
+    pr[k] = 0;
+    ds(cx+16, cy+ch-26, pr, CGN, 0, 1);
+}
+
+/* ---- Tum uygulamalar icin kare basina adim ve tus dagitimi ---- */
+static void apps_tick(void){ mus_tick(); snake_tick(); }
+
+static void on_key(u8 c){
+    if(!c) return;
+    if(FOCUS==1 && TERM_OPEN){ term_key(c); return; }
+    if(FOCUS==2 && NOTE_OPEN){ note_key(c); return; }
+    if(FOCUS==3 && SN_OPEN){ sn_key(c); return; }
+}
+
 static void DESKTOP(void){
     fr(0, 0, (i32)SW, (i32)SH, BG_BASE); 
     
@@ -469,7 +797,7 @@ static void DESKTOP(void){
     ds(SW-180, 8, "22 SUBAT | 10:26 PM", CW, 0, 1);
     
     /* WINDOWS 11 DOCK */
-    i32 dock_w = 500; i32 dock_x = (SW - dock_w) / 2; i32 dock_y = SH - 80;
+    i32 dock_w = 660; i32 dock_x = (SW - dock_w) / 2; i32 dock_y = SH - 80;
     DRAW_GLASS = 1; rr(dock_x, dock_y, dock_w, 65, 15, DOCK_BG); DRAW_GLASS = 0; rb(dock_x, dock_y, dock_w, 65, PAN_BD, 1);
     
     /* Başlat Butonu */
@@ -482,7 +810,7 @@ static void DESKTOP(void){
     if(CLK(dock_x + 80, dock_y + 10, 45, 45)) FO = 1;
     
     rr(dock_x + 145, dock_y + 10, 45, 45, 10, LIN_ORG); 
-    if(CLK(dock_x + 145, dock_y + 10, 45, 45)) TERM_OPEN = 1;
+    if(CLK(dock_x + 145, dock_y + 10, 45, 45)){ TERM_OPEN = 1; FOCUS = 1; }
 
     rr(dock_x + 210, dock_y + 10, 45, 45, 10, AI_PURP); 
     if(CLK(dock_x + 210, dock_y + 10, 45, 45)) AI_OPEN = 1;
@@ -493,7 +821,16 @@ static void DESKTOP(void){
     rr(dock_x + 340, dock_y + 10, 45, 45, 10, CRD); 
     if(CLK(dock_x + 340, dock_y + 10, 45, 45)) TASKMGR_OPEN = 1;
     
-    FILEMGR(); TERMINAL_APP(); TASKMGR_APP(); SYSTEM_APP(); DISPLAY_APP(); WINDAI_ASSISTANT(); START_MENU(); SPOTLIGHT_SEARCH();
+    rr(dock_x + 405, dock_y + 10, 45, 45, 10, CHR_GRN);
+    if(CLK(dock_x + 405, dock_y + 10, 45, 45)) MUS_OPEN = 1;
+    rr(dock_x + 470, dock_y + 10, 45, 45, 10, 0xFF39C5BBu);
+    if(CLK(dock_x + 470, dock_y + 10, 45, 45)) MIKU_OPEN = 1;
+    rr(dock_x + 535, dock_y + 10, 45, 45, 10, MAC_YEL);
+    if(CLK(dock_x + 535, dock_y + 10, 45, 45)){ NOTE_OPEN = 1; FOCUS = 2; }
+    rr(dock_x + 600, dock_y + 10, 45, 45, 10, CGN);
+    if(CLK(dock_x + 600, dock_y + 10, 45, 45)) snake_open();
+
+    FILEMGR(); TERMINAL_APP(); TASKMGR_APP(); SYSTEM_APP(); DISPLAY_APP(); WINDAI_ASSISTANT(); MUSIC_APP(); MIKU_APP(); NOTES_APP(); SNAKE_APP(); START_MENU(); SPOTLIGHT_SEARCH();
 
     if(INSTALLING) {
         i32 px = SW/2 - 180, py = SH/2 - 70; 
@@ -555,10 +892,10 @@ void kernel_main(multiboot_info_t *mbi){
     u32 flags = *((u32*)((u8*)mbi + 0));
     if(flags & 1) { u32 mem_upper_kb = *((u32*)((u8*)mbi + 8)); SYS_RAM_MB = (mem_upper_kb / 1024) + 1; } else { SYS_RAM_MB = 2048; }
 
-    mouse_init(); load_root_dir();
+    mouse_init(); load_root_dir(); term_init();
     
     while(1){ 
-        mouse_poll(); kbd_poll(); 
+        ps2_pump(); mouse_poll(); for(int ki=0; ki<8; ki++) on_key(kbd_poll()); apps_tick(); 
         if(AI_BOOT_PHASE < 2) { BOOT_SCREEN(); } 
         else { DESKTOP(); CUR(); }
         swap_buffers(); 
