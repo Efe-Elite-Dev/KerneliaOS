@@ -1230,7 +1230,8 @@ static void ses_cmd(const char *arg){
 #define TF_PSH 0x08
 #define TF_ACK 0x10
 #define TCP_MSS 1400
-#define TCP_RX_CAP 32768
+#define TCP_RX_CAP 1048576   /* 1 MB: Chromium koprusunun BMP ekran goruntusu sigsin */
+#define TCP_WIN 4096         /* alici penceresi; RTL8139 halkasi (8 KB) tasmasin diye kucuk */
 
 enum { TS_CLOSED = 0, TS_SYN_SENT, TS_ESTAB, TS_DONE };
 static int TCP_STATE = TS_CLOSED;
@@ -1260,7 +1261,7 @@ static int tcp_out(u8 flags, const u8 *data, int n){
     put16(seg, TCP_LPORT); put16(seg + 2, TCP_RPORT);
     put32(seg + 4, TCP_SEQ); put32(seg + 8, TCP_ACK);
     seg[12] = 0x50; seg[13] = flags;
-    put16(seg + 14, 8192); put16(seg + 16, 0); put16(seg + 18, 0);
+    put16(seg + 14, TCP_WIN); put16(seg + 16, 0); put16(seg + 18, 0);
     for(int i = 0; i < n; i++) seg[20 + i] = data[i];
     put16(seg + 16, tcp_csum(NET_IP, TCP_RIP, seg, 20 + n));
     if(!ip_send(TCP_RIP, 6, seg, 20 + n)) return 0;
@@ -1318,21 +1319,21 @@ static int tcp_connect(u32 ip, u16 port){
     return TCP_STATE == TS_ESTAB;
 }
 
-/* HTTP/1.0 GET: yaniti TCP_RX'e doldurur (sunucu kapatinca biter, en fazla ~3 sn) */
-static int http_get(u32 ip, u16 port, const char *path, const char *host){
+/* HTTP/1.0 GET: yaniti TCP_RX'e doldurur (sunucu kapatinca biter, en fazla wait_ticks tick) */
+static int http_get(u32 ip, u16 port, const char *path, const char *host, u32 wait_ticks){
     if(!tcp_connect(ip, port)) return 0;
-    char req[256];
+    char req[512];
     int k = 0;
     const char *parts[5] = { "GET ", path, " HTTP/1.0\r\nHost: ", host, "\r\nConnection: close\r\n\r\n" };
     for(int i = 0; i < 5; i++){
-        for(int j = 0; parts[i][j] && k < 250; j++) req[k++] = parts[i][j];
+        for(int j = 0; parts[i][j] && k < 500; j++) req[k++] = parts[i][j];
     }
     for(int off = 0; off < k; off += TCP_MSS){
         int c = (k - off < TCP_MSS) ? (k - off) : TCP_MSS;
         tcp_out(TF_PSH | TF_ACK, (const u8 *)req + off, c);
     }
-    u32 until = TICKS + 150;
-    while(!TCP_FIN && TICKS < until){ nic_poll(); __asm__ volatile("hlt"); }
+    u32 until = TICKS + wait_ticks;
+    while(!TCP_FIN && TICKS < until) nic_poll();   /* hlt yok: RTL8139 halkasi hizli bosalsin */
     if(TCP_FIN && TCP_STATE == TS_ESTAB) tcp_out(TF_FIN | TF_ACK, 0, 0);
     TCP_STATE = TS_DONE;
     return TCP_RXN > 0;
@@ -1398,7 +1399,7 @@ static void http_cmd(const char *arg){
     if(!url_parse(arg, &ip, &port, path)){ tl_add("KULLANIM: http ip[:port][/yol]  (ornek: http 10.0.2.2:8080/index.html)"); return; }
     char ipst[16];
     ip_str(ip, ipst);
-    if(!http_get(ip, port, path, ipst)){ tl_add("BAGLANTI KURULAMADI (ZAMAN ASIMI)."); return; }
+    if(!http_get(ip, port, path, ipst, 150)){ tl_add("BAGLANTI KURULAMADI (ZAMAN ASIMI)."); return; }
     http_show();
 }
 
@@ -1618,7 +1619,115 @@ static void html_from_response(void){
 static char BR_URL[64]; static int BR_ULEN = 0;
 static char BR_TARGET[64];
 static char BR_ERR[64];
-static int BR_PAGE = 0; /* 0 ana sayfa, 1 hata, 2 hakkinda, 3 yuklenen sayfa */
+static int BR_PAGE = 0; /* 0 ana sayfa, 1 hata, 2 hakkinda, 3 metin sayfasi, 4 Chromium goruntusu */
+
+/* ---- Chromium koprusu: host'ta calisan tools/chromium_bridge.py sayfayi
+   Chromium ile acip ekran goruntusunu 24-bit BMP olarak yollar ---- */
+#define BR_WW 760                /* tarayici penceresi genisligi */
+#define BR_WH 520                /* tarayici penceresi yuksekligi */
+#define BR_VW (BR_WW - 40)       /* sayfa alani (viewport) genisligi */
+#define BR_VH (BR_WH - 112)      /* sayfa alani (viewport) yuksekligi */
+#define BR_PORT 8088             /* koprunun portu (--port ile degisir) */
+static u32 BR_IMG[BR_VW * BR_VH]; /* son ekran goruntusu, 0xAARRGGBB */
+static int BR_IW = 0, BR_IH = 0;  /* goruntu boyutu (0 = yok) */
+
+static u32 le32(const u8 *p){ return (u32)p[0] | ((u32)p[1] << 8) | ((u32)p[2] << 16) | ((u32)p[3] << 24); }
+static u16 le16(const u8 *p){ return (u16)(p[0] | (p[1] << 8)); }
+
+/* Sorgu degeri icin yuzde kodlama (dst en az 3*strlen(src)+1 bayt) */
+static void pct_enc(char *dst, const char *src){
+    static const char hx[] = "0123456789ABCDEF";
+    int k = 0;
+    for(int i = 0; src[i]; i++){
+        u8 c = (u8)src[i];
+        int safe = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+                   c == '-' || c == '_' || c == '.' || c == '~';
+        if(safe){ dst[k++] = (char)c; }
+        else { dst[k++] = '%'; dst[k++] = hx[c >> 4]; dst[k++] = hx[c & 15]; }
+    }
+    dst[k] = 0;
+}
+
+/* 24-bit sikistirmasiz BMP -> BR_IMG (alt-ust sirali her iki yonu de kabul eder) */
+static int bmp_decode(const u8 *b, int n){
+    if(n < 54 || b[0] != 'B' || b[1] != 'M') return 0;
+    u32 off = le32(b + 10);
+    i32 w = (i32)le32(b + 18), h = (i32)le32(b + 22);
+    u16 bpp = le16(b + 28);
+    u32 comp = le32(b + 30);
+    if(bpp != 24 || comp != 0 || w <= 0 || h == 0) return 0;
+    int top_down = (h < 0);
+    if(top_down) h = -h;
+    if(w > BR_VW || h > BR_VH) return 0;
+    u32 stride = ((u32)w * 3u + 3u) & ~3u;
+    if(off > (u32)n || stride * (u32)h > (u32)n - off) return 0;
+    for(int y = 0; y < h; y++){
+        const u8 *row = b + off + (top_down ? (u32)y : (u32)(h - 1 - y)) * stride;
+        for(int x = 0; x < w; x++){
+            const u8 *p = row + x * 3;
+            BR_IMG[y * BR_VW + x] = 0xFF000000u | ((u32)p[2] << 16) | ((u32)p[1] << 8) | p[0];
+        }
+    }
+    BR_IW = w; BR_IH = h;
+    return 1;
+}
+
+/* Koprue istek: q = "a=go&u=..." gibi (zaten kodlanmis) sorgu.
+   Donus: 1 goruntu hazir, 0 kopru yok (baglanti kurulamadi), -1 kopru hata dondu (BR_ERR dolu) */
+static int bridge_req(const char *q){
+    char path[512];
+    kcpy(path, "/act?");
+    int k = (int)klen(path);
+    for(int i = 0; q[i] && k < 430; i++) path[k++] = q[i];
+    path[k] = 0;
+    kcpy(path + k, "&w="); k = (int)klen(path);
+    dec_str(BR_VW, path + k);
+    k = (int)klen(path);
+    kcpy(path + k, "&h="); k = (int)klen(path);
+    dec_str(BR_VH, path + k);
+
+    if(!http_get(NET_GW, BR_PORT, path, "10.0.2.2", 1500)) return 0;
+    if(TCP_RXN < 60) { kcpy(BR_ERR, "KOPRU BOS YANIT"); return -1; }
+
+    int hdr_end = -1;
+    for(int i = 0; i + 3 < TCP_RXN; i++){
+        if(TCP_RX[i] == '\r' && TCP_RX[i + 1] == '\n' && TCP_RX[i + 2] == '\r' && TCP_RX[i + 3] == '\n'){ hdr_end = i + 4; break; }
+    }
+    if(hdr_end < 0) { kcpy(BR_ERR, "KOPRU GECERSIZ YANIT"); return -1; }
+
+    if(!(TCP_RX[9] == '2' && TCP_RX[10] == '0' && TCP_RX[11] == '0')){   /* 200 degilse govde hata metnidir */
+        int n = 0;
+        for(int i = hdr_end; i < TCP_RXN && n < 60 && TCP_RX[i] != '\r' && TCP_RX[i] != '\n'; i++)
+            BR_ERR[n++] = (char)TCP_RX[i];
+        BR_ERR[n] = 0;
+        if(n == 0) kcpy(BR_ERR, "KOPRU HATA DONDURDU");
+        return -1;
+    }
+
+    /* X-Url basligi: gecerli adres adres cubuguna yazilir */
+    static const char key[] = "X-Url: ";
+    for(int i = 0; i + 7 < hdr_end; i++){
+        int m = 0;
+        while(m < 7 && TCP_RX[i + m] == (u8)key[m]) m++;
+        if(m == 7){
+            int n = 0;
+            for(int j = i + 7; j < hdr_end && n < 60 && TCP_RX[j] != '\r' && TCP_RX[j] != '\n'; j++)
+                BR_URL[n++] = (char)TCP_RX[j];
+            BR_URL[n] = 0; BR_ULEN = n;
+            break;
+        }
+    }
+
+    if(!bmp_decode(TCP_RX + hdr_end, TCP_RXN - hdr_end)){ kcpy(BR_ERR, "GORUNTU COZULEMEDI"); return -1; }
+    return 1;
+}
+
+/* Kopru islemi (kaydirma, tiklama): hata olursa sayfayi hata ekranina alir */
+static void br_act(const char *q){
+    int r = bridge_req(q);
+    if(r == 0){ BR_PAGE = 1; kcpy(BR_ERR, "KOPRU ILE BAGLANTI KOPTU"); }
+    else if(r < 0) BR_PAGE = 1;
+}
 
 static void br_go(void){
     BR_URL[BR_ULEN] = 0;
@@ -1626,18 +1735,31 @@ static void br_go(void){
     if(str_eq(BR_URL, "about")){ BR_PAGE = 2; return; }
     kcpy(BR_TARGET, BR_URL);
     if(!NIC_UP){ BR_PAGE = 1; kcpy(BR_ERR, "AG KARTI YOK (QEMU -nic user,model=rtl8139)"); return; }
+
+    /* Once Chromium koprusu: JavaScript'li siteler, DNS ve adres biçimi serbest */
+    char q[256];
+    kcpy(q, "a=go&u=");
+    pct_enc(q + 7, BR_URL);
+    int r = bridge_req(q);
+    if(r != 0){ BR_PAGE = (r > 0) ? 4 : 1; return; }
+
+    /* Kopru kapaliysa: IP:PORT/YOL adresi icin eski HTTP metin tarayicisi */
     u32 ip = 0; u16 port = 80; char path[96];
     if(!url_parse(BR_URL, &ip, &port, path)){
-        BR_PAGE = 1; kcpy(BR_ERR, "ADRES: IP:PORT/YOL  (ornek 10.0.2.2:8080/index.html)"); return;
+        BR_PAGE = 1; kcpy(BR_ERR, "KOPRU KAPALI: host'ta tools/chromium_bridge.py calistirin"); return;
     }
     char host[16];
     ip_str(ip, host);
-    if(!http_get(ip, port, path, host)){ BR_PAGE = 1; kcpy(BR_ERR, "BAGLANTI KURULAMADI (ZAMAN ASIMI)"); return; }
+    if(!http_get(ip, port, path, host, 150)){ BR_PAGE = 1; kcpy(BR_ERR, "BAGLANTI KURULAMADI (KOPRU KAPALI MI?)"); return; }
     html_from_response();
     BR_PAGE = 3;
 }
 
 static void br_key(u8 c){
+    if(BR_PAGE == 4){
+        if(c == KEY_UP){ br_act("a=scroll&dy=-200"); return; }
+        if(c == KEY_DOWN){ br_act("a=scroll&dy=200"); return; }
+    }
     if(c == KEY_UP){ if(BR_SCROLL > 0) BR_SCROLL--; return; }
     if(c == KEY_DOWN){ if(BR_SCROLL + 1 < BR_NL) BR_SCROLL++; return; }
     if(c == 8){ if(BR_ULEN > 0) BR_ULEN--; return; }
@@ -1647,7 +1769,7 @@ static void br_key(u8 c){
 
 static void BROWSER_APP(void){
     if(!BR_OPEN) return;
-    const i32 wx = 200, wy = 140, ww = 560, wh = 380;
+    const i32 wx = 200, wy = 140, ww = BR_WW, wh = BR_WH;
     DRAW_WINDOW(wx, wy, ww, wh, "TARAYICI", PAN_BG);
     if(CLK(wx + 14, wy + 11, 12, 12)){ BR_OPEN = 0; return; }
     if(MLB && !PMLB && HOV(wx, wy, ww, wh)) FOCUS = 4;
@@ -1666,7 +1788,7 @@ static void BROWSER_APP(void){
     rr(wx + 20, wy + 92, ww - 40, wh - 112, 10, PAN_BG);
     if(BR_PAGE == 0){
         ds(wx + 40, wy + 115, "WINDOS TARAYICI", CW, 0, 1);
-        ds(wx + 40, wy + 135, "Sayfa icin IP adresi yazin ve Enter'a basin:", CGY, 0, 1);
+        ds(wx + 40, wy + 135, "Sayfa adresi yazin (ornek: www.youtube.com) ve Enter'a basin:", CGY, 0, 1);
         ds(wx + 40, wy + 155, "ornek: 10.0.2.2:8080/index.html", CTXT, 0, 1);
         ds(wx + 40, wy + 185, "Yerel ayarlar icin 'about' yazin.", CGY, 0, 1);
     }
@@ -1681,7 +1803,7 @@ static void BROWSER_APP(void){
             char tt[72]; kcpy(tt, "BASLIK: "); kcpy(tt + klen(tt), BR_TITLE);
             ds(wx + 30, wy + 100, tt, CGY, 0, 1);
         }
-        int vis = 16;
+        int vis = 26;
         for(int r = 0; r < vis && BR_SCROLL + r < BR_NL; r++){
             int idx = BR_SCROLL + r;
             u32 col = (BR_KD[idx] == 1) ? CW : (BR_KD[idx] == 2) ? WIN_BLUE : CTXT;
@@ -1689,10 +1811,30 @@ static void BROWSER_APP(void){
         }
         if(BR_NL == 0) ds(wx + 30, wy + 116, "(sayfada metin yok)", CGY, 0, 1);
     }
+    else if(BR_PAGE == 4){
+        /* Sayfa alani: once tiklamayi isle (sol tik -> koprude tiklama), sonra goruntuyu ciz */
+        i32 vx = wx + 20, vy = wy + 92;
+        if(HOV(vx, vy, BR_VW, BR_VH) && MLB && !PMLB){
+            char q[48];
+            kcpy(q, "a=click&x=");
+            dec_str((u32)(MX - vx), q + klen(q));
+            kcpy(q + klen(q), "&y=");
+            dec_str((u32)(MY - vy), q + klen(q));
+            br_act(q);
+        }
+        if(BR_PAGE == 4 && BR_IW > 0){
+            for(int r = 0; r < BR_IH; r++)
+                for(int c = 0; c < BR_IW; c++) pset(vx + c, vy + r, BR_IMG[r * BR_VW + c]);
+        }
+        if(BR_PAGE == 1){
+            ds(wx + 40, wy + 115, "BAGLANILAMADI", CRD, 0, 1);
+            ds(wx + 40, wy + 135, BR_ERR, CTXT, 0, 1);
+        }
+    }
     else {
         ds(wx + 40, wy + 115, "HAKKINDA", CW, 0, 1);
         ds(wx + 40, wy + 135, "WindOS 18.1", CTXT, 0, 1);
-        ds(wx + 40, wy + 155, "Tarayici IP adresiyle sayfa acar (HTTP).", CGY, 0, 1);
+        ds(wx + 40, wy + 155, "Sayfalar host'taki Chromium ile acilir (koprü).", CGY, 0, 1);
         ds(wx + 40, wy + 171, "Ok tuslari ile sayfayi kaydirin.", CGY, 0, 1);
     }
 }
