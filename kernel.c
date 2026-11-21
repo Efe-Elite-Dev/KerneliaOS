@@ -277,6 +277,14 @@ static int mq_pop(u8 *d){ if(MQH == MQT) return 0; *d = MQ[MQH]; MQH = (MQH + 1)
 #define KEY_RIGHT 0x84
 
 /* Bir tus olayi dondurur: ASCII, ok kodu veya 0 (olay yok) */
+/* Shift'li noktalama (US duzeni): ornek ':' icin Shift+; */
+static char shift_sym(char c){
+    static const char from[] = "1234567890-=[]\\;'`,./";
+    static const char to[]   = "!@#$%^&*()_+{}|:\"~<>?";
+    for(int i = 0; from[i]; i++) if(from[i] == c) return to[i];
+    return c;
+}
+
 static u8 kbd_poll(void){
     static int ext = 0;
     u8 sc; if(!kq_pop(&sc)) return 0;
@@ -301,6 +309,7 @@ static u8 kbd_poll(void){
     if(sc >= 128) return 0;
     char c = SCMAP[sc]; if(!c) return 0;
     if(c >= 'A' && c <= 'Z' && !(K_SH ^ K_CP)) c = (char)(c + 32);
+    if(K_SH) c = shift_sym(c);
     return (u8)c;
 }
 
@@ -963,6 +972,8 @@ static void icmp_rx(u32 src, const u8 *m, int n){
     }
 }
 
+static void tcp_rx(u32 src, const u8 *s, int n);
+
 static void ip_rx(const u8 *p, int n){
     if(n < 20 || (p[0] >> 4) != 4) return;
     int ihl = (p[0] & 0x0F) * 4;
@@ -970,6 +981,7 @@ static void ip_rx(const u8 *p, int n){
     if(ihl < 20 || tot < ihl || tot > n) return;
     if(get32(p + 16) != NET_IP) return;
     if(p[9] == 1) icmp_rx(get32(p + 12), p + ihl, tot - ihl);
+    else if(p[9] == 6) tcp_rx(get32(p + 12), p + ihl, tot - ihl);
 }
 
 static void net_rx(const u8 *f, int n){
@@ -1209,6 +1221,179 @@ static void ses_cmd(const char *arg){
     tl_add(line);
 }
 
+/* ========================================================================= */
+/* TCP ISTEMCISI (tek baglanti) ve HTTP GET                                  */
+/* ========================================================================= */
+#define TF_FIN 0x01
+#define TF_SYN 0x02
+#define TF_RST 0x04
+#define TF_PSH 0x08
+#define TF_ACK 0x10
+#define TCP_MSS 1400
+#define TCP_RX_CAP 32768
+
+enum { TS_CLOSED = 0, TS_SYN_SENT, TS_ESTAB, TS_DONE };
+static int TCP_STATE = TS_CLOSED;
+static u32 TCP_RIP = 0;
+static u16 TCP_RPORT = 0, TCP_LPORT = 0;
+static u32 TCP_SEQ = 0, TCP_ACK = 0;
+static u8  TCP_RX[TCP_RX_CAP];
+static int TCP_RXN = 0;
+static int TCP_FIN = 0;
+static u16 TCP_EPHEM = 49152;
+
+static u16 tcp_csum(u32 src, u32 dst, const u8 *seg, int n){
+    u8 ph[12];
+    put32(ph, src); put32(ph + 4, dst); ph[8] = 0; ph[9] = 6; put16(ph + 10, (u16)n);
+    u32 s = 0;
+    for(int i = 0; i < 12; i += 2) s += (u32)((ph[i] << 8) | ph[i + 1]);
+    for(int i = 0; i + 1 < n; i += 2) s += (u32)((seg[i] << 8) | seg[i + 1]);
+    if(n & 1) s += (u32)(seg[n - 1] << 8);
+    while(s >> 16) s = (s & 0xFFFF) + (s >> 16);
+    return (u16)~s;
+}
+
+/* Bir TCP segmenti gonderir; SYN/FIN sirayi bir artirir */
+static int tcp_out(u8 flags, const u8 *data, int n){
+    u8 seg[20 + TCP_MSS];
+    if(n < 0 || n > TCP_MSS) return 0;
+    put16(seg, TCP_LPORT); put16(seg + 2, TCP_RPORT);
+    put32(seg + 4, TCP_SEQ); put32(seg + 8, TCP_ACK);
+    seg[12] = 0x50; seg[13] = flags;
+    put16(seg + 14, 8192); put16(seg + 16, 0); put16(seg + 18, 0);
+    for(int i = 0; i < n; i++) seg[20 + i] = data[i];
+    put16(seg + 16, tcp_csum(NET_IP, TCP_RIP, seg, 20 + n));
+    if(!ip_send(TCP_RIP, 6, seg, 20 + n)) return 0;
+    TCP_SEQ += (u32)n + ((flags & (TF_SYN | TF_FIN)) ? 1u : 0u);
+    return 1;
+}
+
+static void tcp_rx(u32 src, const u8 *s, int n){
+    if(n < 20) return;
+    u16 sp = get16(s), dp = get16(s + 2);
+    u32 seq = get32(s + 4), ack = get32(s + 8);
+    int doff = (s[12] >> 4) * 4;
+    u8 fl = s[13];
+    if(doff < 20 || doff > n) return;
+    if(src != TCP_RIP || sp != TCP_RPORT || dp != TCP_LPORT) return;
+    if(fl & TF_RST){ TCP_STATE = TS_DONE; TCP_FIN = 1; return; }
+    if(TCP_STATE == TS_SYN_SENT){
+        if((fl & (TF_SYN | TF_ACK)) == (TF_SYN | TF_ACK) && ack == TCP_SEQ){
+            TCP_ACK = seq + 1;
+            TCP_STATE = TS_ESTAB;
+            tcp_out(TF_ACK, 0, 0);
+        }
+        return;
+    }
+    if(TCP_STATE != TS_ESTAB) return;
+    int pl = n - doff;
+    if(pl > 0 && seq == TCP_ACK){                     /* sirali veri: al */
+        for(int i = 0; i < pl && TCP_RXN < TCP_RX_CAP; i++) TCP_RX[TCP_RXN++] = s[doff + i];
+        TCP_ACK += (u32)pl;
+    }
+    if((fl & TF_FIN) && seq + (u32)pl == TCP_ACK){    /* karsi taraf kapatiyor */
+        TCP_ACK++;
+        TCP_FIN = 1;
+    }
+    if(pl > 0 || (fl & TF_FIN)) tcp_out(TF_ACK, 0, 0);
+}
+
+/* SYN gonderir, SYN-ACK bekler (3 deneme, her biri ~1 sn) */
+static int tcp_connect(u32 ip, u16 port){
+    u32 nh = (((ip ^ NET_IP) & 0xFFFFFF00u) == 0) ? ip : NET_GW;
+    if(!arp_resolve(nh)) return 0;
+    TCP_RIP = ip; TCP_RPORT = port;
+    TCP_LPORT = TCP_EPHEM++;
+    if(TCP_EPHEM < 49152) TCP_EPHEM = 49152;
+    TCP_RXN = 0; TCP_FIN = 0;
+    u32 isn = 0x1000u + TICKS * 7919u;
+    for(int tries = 0; tries < 3; tries++){
+        TCP_STATE = TS_SYN_SENT;
+        TCP_SEQ = isn; TCP_ACK = 0;
+        tcp_out(TF_SYN, 0, 0);
+        u32 until = TICKS + 50;
+        while(TICKS < until && TCP_STATE == TS_SYN_SENT){ nic_poll(); __asm__ volatile("hlt"); }
+        if(TCP_STATE != TS_SYN_SENT) break;
+    }
+    return TCP_STATE == TS_ESTAB;
+}
+
+/* HTTP/1.0 GET: yaniti TCP_RX'e doldurur (sunucu kapatinca biter, en fazla ~3 sn) */
+static int http_get(u32 ip, u16 port, const char *path, const char *host){
+    if(!tcp_connect(ip, port)) return 0;
+    char req[256];
+    int k = 0;
+    const char *parts[5] = { "GET ", path, " HTTP/1.0\r\nHost: ", host, "\r\nConnection: close\r\n\r\n" };
+    for(int i = 0; i < 5; i++){
+        for(int j = 0; parts[i][j] && k < 250; j++) req[k++] = parts[i][j];
+    }
+    for(int off = 0; off < k; off += TCP_MSS){
+        int c = (k - off < TCP_MSS) ? (k - off) : TCP_MSS;
+        tcp_out(TF_PSH | TF_ACK, (const u8 *)req + off, c);
+    }
+    u32 until = TICKS + 150;
+    while(!TCP_FIN && TICKS < until){ nic_poll(); __asm__ volatile("hlt"); }
+    if(TCP_FIN && TCP_STATE == TS_ESTAB) tcp_out(TF_FIN | TF_ACK, 0, 0);
+    TCP_STATE = TS_DONE;
+    return TCP_RXN > 0;
+}
+
+/* Yaniti terminale yazar: durum satiri, boyut ve govdenin ilk satirlari */
+static void http_show(void){
+    int hdr_end = -1;
+    for(int i = 0; i + 3 < TCP_RXN; i++){
+        if(TCP_RX[i] == '\r' && TCP_RX[i + 1] == '\n' && TCP_RX[i + 2] == '\r' && TCP_RX[i + 3] == '\n'){ hdr_end = i + 4; break; }
+    }
+    char line[80];
+    int n = 0;
+    for(int i = 0; i < TCP_RXN && i < 70 && TCP_RX[i] != '\r' && TCP_RX[i] != '\n'; i++) line[n++] = (char)TCP_RX[i];
+    line[n] = 0;
+    tl_add(line);
+    char bs[12];
+    dec_str((u32)TCP_RXN, bs);
+    kcpy(line, "BOYUT: "); kcpy(line + klen(line), bs); kcpy(line + klen(line), " BAYT");
+    tl_add(line);
+    int b = (hdr_end < 0) ? 0 : hdr_end;
+    int shown = 0;
+    while(b < TCP_RXN && shown < 12){
+        n = 0;
+        while(b < TCP_RXN && TCP_RX[b] != '\n' && n < 76){
+            if(TCP_RX[b] != '\r') line[n++] = (char)TCP_RX[b];
+            b++;
+        }
+        while(b < TCP_RXN && TCP_RX[b] != '\n') b++;   /* uzun satirin kalani */
+        b++;
+        line[n] = 0;
+        tl_add(line);
+        shown++;
+    }
+}
+
+/* http ip[:port][/yol]: ornek http 10.0.2.2:8080/index.html */
+static void http_cmd(const char *arg){
+    if(!NIC_UP){ tl_add("AG KARTI YOK: QEMU -nic user,model=rtl8139 ile calistirin."); return; }
+    char host[32]; int hn = 0;
+    while(arg[hn] && arg[hn] != ':' && arg[hn] != '/' && hn < 31){ host[hn] = arg[hn]; hn++; }
+    host[hn] = 0;
+    u32 ip = 0;
+    if(!parse_ip(host, &ip)){ tl_add("KULLANIM: http ip[:port][/yol]  (ornek: http 10.0.2.2:8080/index.html)"); return; }
+    const char *p = arg + hn;
+    u32 port = 80;
+    if(*p == ':'){ p++; port = parse_uint(p); while(*p >= '0' && *p <= '9') p++; }
+    if(port == 0 || port > 65535){ tl_add("GECERSIZ PORT."); return; }
+    char path[96];
+    path[0] = '/'; path[1] = 0;
+    if(*p == '/'){
+        int k = 0;
+        while(p[k] && p[k] != ' ' && k < 94){ path[k] = p[k]; k++; }
+        path[k] = 0;
+    }
+    char ipst[16];
+    ip_str(ip, ipst);
+    if(!http_get(ip, (u16)port, path, ipst)){ tl_add("BAGLANTI KURULAMADI (ZAMAN ASIMI)."); return; }
+    http_show();
+}
+
 static void term_exec(void){
     char line[TL_W];
     int n = TIN_LEN;
@@ -1229,7 +1414,7 @@ static void term_exec(void){
     const char *arg = &line[i];
     if(c == 0) return;
 
-    if(str_eq(cmd, "help")){ tl_add("KOMUTLAR: help ver mem echo clear time muzik miku not snake web exit lspci"); tl_add("AG: ping [ip]  (ornek: ping 10.0.2.2)"); tl_add("SES: ses [hz]  (ornek: ses 440)"); }
+    if(str_eq(cmd, "help")){ tl_add("KOMUTLAR: help ver mem echo clear time muzik miku not snake web exit lspci"); tl_add("AG: ping [ip]  (ornek: ping 10.0.2.2)"); tl_add("SES: ses [hz]  (ornek: ses 440)"); tl_add("HTTP: http ip[:port][/yol]"); }
     else if(str_eq(cmd, "ver"))   tl_add("WindOS 18.1 (x86, 32-bit)");
     else if(str_eq(cmd, "mem")){
         char b[TL_W]; kcpy(b, "FIZIKSEL RAM (MULTIBOOT): ");
@@ -1249,6 +1434,7 @@ static void term_exec(void){
     else if(str_eq(cmd, "lspci")) pci_list_to_term();
     else if(str_eq(cmd, "ping"))  ping_cmd(arg);
     else if(str_eq(cmd, "ses"))   ses_cmd(arg);
+    else if(str_eq(cmd, "http"))  http_cmd(arg);
     else {
         char b[TL_W];
         app_str(b, "BILINMEYEN KOMUT: ", cmd);
