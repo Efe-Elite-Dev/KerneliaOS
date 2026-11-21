@@ -30,6 +30,13 @@ static u32 BB[MAX_SW * MAX_SH];          /* arka tampon, 0xAARRGGBB */
 static int DIRTY = 1;                    /* bu karede yeniden cizim gerekli */
 #define FRAME_HZ 50
 static volatile u32 TICKS = 0;           /* zamanlayici tick sayaci (FRAME_HZ/sn) */
+
+/* ---- Kurulum: ilk acilista kullanici adi ---- */
+static int  SETUP_DONE = 0;
+static char SETUP_BUF[24];
+static int  SETUP_LEN = 0;
+static char USER_NAME[24] = "kullanici";
+static char PROMPT_STR[48] = "kullanici@WINDOS:~$ ";
 static int ANIM_PREV = 0;                /* onceki karede animasyon vardi */
 static u32 SYS_RAM_MB = 0;
 
@@ -455,7 +462,7 @@ static void DISPLAY_APP(void){
 
 static void SYSTEM_APP(void){
     if(!SYS_OPEN) return;
-    DRAW_WINDOW(250, 150, 500, 250, "SISTEM BILGISI", PAN_BG);
+    DRAW_WINDOW(250, 150, 500, 300, "SISTEM BILGISI", PAN_BG);
     ds(280, 200, "ISLETIM SISTEMI: WINDOS 18.1", WIN_BLUE, 0, 1);
     ds(280, 230, "MIMARI: X86 (32 BIT)", CTXT, 0, 1);
     char buf[64]; kcpy(buf, "FIZIKSEL RAM: ");
@@ -463,6 +470,8 @@ static void SYSTEM_APP(void){
     else kcpy(buf + klen(buf), "BILINMIYOR");
     ds(280, 260, buf, CGN, 0, 1);
     ds(280, 300, "Depolama ve ag surucusu henuz yok.", CGY, 0, 1);
+    char ub[48]; kcpy(ub, "KULLANICI: "); kcpy(ub + klen(ub), USER_NAME);
+    ds(280, 340, ub, CTXT, 0, 1);
 }
 
 static void WINDAI_ASSISTANT(void){
@@ -813,7 +822,7 @@ static void term_exec(void){
     line[n] = 0;
 
     char pr[TL_W];
-    app_str(pr, "WINDOS:~$ ", line);
+    app_str(pr, PROMPT_STR, line);
     tl_add(pr);
     TIN_LEN = 0;
 
@@ -883,7 +892,7 @@ static void TERMINAL_APP(void){
     for(i32 i = start; i < TL_N; i++) ds(cx + 16, cy + 46 + (i - start) * 12, TLINES[i], CTXT, 0, 1);
 
     char pr[TL_W];
-    app_str(pr, "WINDOS:~$ ", "");
+    app_str(pr, PROMPT_STR, "");
     int k = (int)klen(pr);
     for(int i = 0; i < TIN_LEN && k < TL_W - 2; i++) pr[k++] = TIN[i];
     if(FOCUS == 1 && k < TL_W - 1) pr[k++] = '_';
@@ -1081,10 +1090,44 @@ static void close_focused(void){
 /* Kare basina adimlar (tempo) */
 static void apps_tick(void){ mus_tick(); snake_tick(); }
 
+/* ---- Kurulum ekrani: kullanici adi sorulur (Enter ile devam) ---- */
+static void setup_finish(void){
+    if(SETUP_LEN > 0){
+        for(int i = 0; i < SETUP_LEN; i++) USER_NAME[i] = SETUP_BUF[i];
+        USER_NAME[SETUP_LEN] = 0;
+    }
+    app_str(PROMPT_STR, USER_NAME, "@WINDOS:~$ ");
+    SETUP_DONE = 1;
+    DIRTY = 1;
+}
+
+static void setup_key(u8 c){
+    if(c == 8){ if(SETUP_LEN > 0){ SETUP_BUF[--SETUP_LEN] = 0; } return; }
+    if(c == '\n' || c == '\r'){ setup_finish(); return; }
+    if(c >= 32 && c < 127 && SETUP_LEN < 20){
+        SETUP_BUF[SETUP_LEN++] = (char)c;
+        SETUP_BUF[SETUP_LEN] = 0;
+    }
+}
+
+static void SETUP_SCREEN(void){
+    i32 cx = (i32)SW / 2, cy = (i32)SH / 2;
+    fr(0, 0, (i32)SW, (i32)SH, BG_BASE);
+    dsc(0, cy - 110, (i32)SW, "WINDOS KURULUM", CW, 0, 2);
+    dsc(0, cy - 40, (i32)SW, "Kullanici adinizi girin:", CGY, 0, 1);
+    rrg(cx - 180, cy, 360, 36, 8, PAN_BG);
+    rb(cx - 180, cy, 360, 36, WIN_BLUE, 2);
+    ds(cx - 168, cy + 14, SETUP_BUF, CTXT, 0, 1);
+    ds(cx - 168 + 8 * SETUP_LEN, cy + 14, "|", WIN_BLUE, 0, 1);
+    dsc(0, cy + 60, (i32)SW, "Enter: devam (bos birakirsan 'kullanici' kullanilir)", CGY, 0, 1);
+}
+
 /* Bir tus olayi: her tus yeniden cizim ister */
 static void on_key(u8 c){
     if(!c) return;
     DIRTY = 1;
+    if(AI_BOOT_PHASE < 2) return;          /* acilis sirasinda tuslar yok sayilir */
+    if(!SETUP_DONE){ setup_key(c); return; }
     if(SPOTLIGHT_OPEN){ sp_key(c); return; }
     if(c == '/' && FOCUS == 0){ sp_open(); return; }
     if(c == 27){ close_focused(); return; }
@@ -1267,6 +1310,7 @@ void kernel_main(multiboot_info_t *mbi){
         if(DIRTY || anim || ANIM_PREV){
             DIRTY = 0;
             if(AI_BOOT_PHASE < 2){ BOOT_SCREEN(); }
+            else if(!SETUP_DONE){ SETUP_SCREEN(); }
             else { DESKTOP(); CUR(); }
             swap_buffers();
         }
