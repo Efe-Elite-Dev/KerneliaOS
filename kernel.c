@@ -39,6 +39,7 @@ static int TASKMGR_OPEN = 0;
 static int TERM_OPEN = 0;
 /* Klavye odagi: 0 yok, 1 terminal, 2 not defteri, 3 yilan */
 static int FOCUS = 0;
+static int BR_OPEN = 0;
 static int FO = 0, CHROME_OPEN = 0, DISP_OPEN = 0, SYS_OPEN = 0, AI_OPEN = 0;
 static i32 FX = 100, FY = 80, FD = 0, FDX = 0, FDY = 0;
 static i32 CX = 150, CY = 100, CD = 0, CDX = 0, CDY = 0; 
@@ -671,6 +672,107 @@ static void SNAKE_APP(void){
     }
 }
 
+static void tl_add(const char *s);
+
+/* ---- PCI: yapilandirma alani (port 0xCF8 adres, 0xCFC veri) ---- */
+static inline void outl(u16 p, u32 v){ __asm__ volatile("outl %0,%1"::"a"(v),"Nd"(p)); }
+static inline u32  inl(u16 p){ u32 v; __asm__ volatile("inl %1,%0":"=a"(v):"Nd"(p)); return v; }
+
+static u32 pci_read32(u8 bus, u8 dev, u8 fn, u8 off){
+    u32 addr = 0x80000000u | ((u32)bus << 16) | ((u32)(dev & 31) << 11)
+             | ((u32)(fn & 7) << 8) | (u32)(off & 0xFC);
+    outl(0xCF8, addr);
+    return inl(0xCFC);
+}
+
+#define PCI_MAX 32
+typedef struct { u16 vendor, device; u8 bus, dev, fn, cls, sub; u32 bar0; } PciDev;
+static PciDev PCI_LIST[PCI_MAX];
+static int PCI_N = 0;
+
+/* Ag karti (RTL8139) bulunursa burada tutulur; bir sonraki adim kullanir */
+#define RTL_VENDOR 0x10EC
+#define RTL_DEVICE 0x8139
+static int NIC_FOUND = 0;
+static PciDev NIC;
+
+/* 0..7 fonksiyon basina: satici 0xFFFF ise cihaz yok */
+static void pci_scan(void){
+    PCI_N = 0; NIC_FOUND = 0;
+    for(u8 d = 0; d < 32; d++){
+        u32 id = pci_read32(0, d, 0, 0x00);
+        if((id & 0xFFFF) == 0xFFFF) continue;
+        /* Cok fonksiyonlu cihaz mi? (header tipi bit 7) */
+        u32 hdr = pci_read32(0, d, 0, 0x0C);
+        int multi = (hdr >> 23) & 1;
+        int maxf = multi ? 8 : 1;
+        for(u8 f = 0; f < maxf; f++){
+            u32 fid = pci_read32(0, d, f, 0x00);
+            if((fid & 0xFFFF) == 0xFFFF) continue;
+            if(PCI_N >= PCI_MAX) return;
+            u32 cls = pci_read32(0, d, f, 0x08);
+            PciDev *p = &PCI_LIST[PCI_N++];
+            p->vendor = (u16)(fid & 0xFFFF);
+            p->device = (u16)(fid >> 16);
+            p->bus = 0; p->dev = d; p->fn = f;
+            p->cls = (u8)(cls >> 24);
+            p->sub = (u8)(cls >> 16);
+            p->bar0 = pci_read32(0, d, f, 0x10);
+            if(p->vendor == RTL_VENDOR && p->device == RTL_DEVICE && !NIC_FOUND){
+                NIC = *p; NIC_FOUND = 1;
+            }
+        }
+    }
+}
+
+/* Sayiyi onaltilik metin olarak yazar: digits basamak, 0x oneki yok */
+static void hex_str(u32 v, int digits, char *out){
+    const char *h = "0123456789ABCDEF";
+    for(int i = digits - 1; i >= 0; i--){ out[i] = h[v & 0xF]; v >>= 4; }
+    out[digits] = 0;
+}
+
+/* lspci: bulunan PCI cihazlarini terminale satir satir yazar */
+static void pci_list_to_term(void){
+    pci_scan();
+    char line[80];
+    if(PCI_N == 0){ tl_add("PCI cihazi bulunamadi."); return; }
+    for(int i = 0; i < PCI_N; i++){
+        PciDev *p = &PCI_LIST[i];
+        char vid[5], did[5], cl[3], sb[3];
+        hex_str(p->vendor, 4, vid); hex_str(p->device, 4, did);
+        hex_str(p->cls, 2, cl); hex_str(p->sub, 2, sb);
+        char bus_dev[12];
+        bus_dev[0]='0'; bus_dev[1]='0'; bus_dev[2]=':';
+        hex_str(p->dev, 2, bus_dev + 3); bus_dev[5]='.'; bus_dev[6]='0'+p->fn; bus_dev[7]=0;
+        /* 00:03.0 8086:100E  sinif 02:00 */
+        int k = 0;
+        for(int j = 0; bus_dev[j] && k < 79; j++) line[k++] = bus_dev[j];
+        line[k++] = ' ';
+        for(int j = 0; j < 4 && k < 79; j++) line[k++] = vid[j];
+        line[k++] = ':';
+        for(int j = 0; j < 4 && k < 79; j++) line[k++] = did[j];
+        const char *mid = "  sinif ";
+        for(int j = 0; mid[j] && k < 79; j++) line[k++] = mid[j];
+        for(int j = 0; j < 2 && k < 79; j++) line[k++] = cl[j];
+        line[k++] = ':';
+        for(int j = 0; j < 2 && k < 79; j++) line[k++] = sb[j];
+        line[k] = 0;
+        tl_add(line);
+    }
+    if(NIC_FOUND){
+        char b[80]; int k = 0;
+        const char *m = "RTL8139 AG KARTI BULUNDU, I/O TABANI: 0x";
+        for(int j = 0; m[j] && k < 70; j++) b[k++] = m[j];
+        char io[5]; hex_str(NIC.bar0 & 0xFFFC, 4, io);
+        for(int j = 0; j < 4; j++) b[k++] = io[j];
+        b[k] = 0;
+        tl_add(b);
+    } else {
+        tl_add("RTL8139 bulunamadi (QEMU -nic user,model=rtl8139 gerekli).");
+    }
+}
+
 /* ---- TERMINAL ---- */
 #define TL_MAX 24
 #define TL_W   80
@@ -724,7 +826,7 @@ static void term_exec(void){
     const char *arg = &line[i];
     if(c==0) return;
 
-    if(str_eq(cmd, "help"))        tl_add("KOMUTLAR: help ver mem echo clear time muzik miku not snake");
+    if(str_eq(cmd, "help"))        tl_add("KOMUTLAR: help ver mem echo clear time muzik miku not snake web exit lspci");
     else if(str_eq(cmd, "ver"))    tl_add("WindOS 18.0 OMEGA-CORE (x86, 32-bit)");
     else if(str_eq(cmd, "mem")){
         char b[TL_W]; kcpy(b, "FIZIKSEL RAM (MULTIBOOT): ");
@@ -738,6 +840,9 @@ static void term_exec(void){
     else if(str_eq(cmd, "miku"))   MIKU_OPEN = 1;
     else if(str_eq(cmd, "not"))    { NOTE_OPEN = 1; FOCUS = 2; }
     else if(str_eq(cmd, "snake"))  snake_open();
+    else if(str_eq(cmd, "web"))    { BR_OPEN = 1; FOCUS = 4; }
+    else if(str_eq(cmd, "exit"))   TERM_OPEN = 0;
+    else if(str_eq(cmd, "lspci"))  pci_list_to_term();
     else {
         char b[TL_W];
         app_str(b, "BILINMEYEN KOMUT: ", cmd);
@@ -778,14 +883,93 @@ static void TERMINAL_APP(void) {
     ds(cx+16, cy+ch-26, pr, CGN, 0, 1);
 }
 
+/* ---- TARAYICI: ag surucusu yok, sadece yerlesik sayfalar ---- */
+static char BR_URL[64]; static int BR_ULEN=0;
+static char BR_TARGET[64];
+static int BR_PAGE=0; /* 0 ana sayfa, 1 ag yok, 2 hakkinda */
+
+static void br_go(void){
+    BR_URL[BR_ULEN] = 0;
+    if(BR_ULEN==0 || str_eq(BR_URL,"home")) BR_PAGE = 0;
+    else if(str_eq(BR_URL,"about")) BR_PAGE = 2;
+    else {
+        BR_PAGE = 1;
+        kcpy(BR_TARGET, BR_URL);
+    }
+}
+
+static void br_key(u8 c){
+    if(c==8){ if(BR_ULEN>0) BR_ULEN--; return; }
+    if(c=='\n' || c=='\r'){ br_go(); return; }
+    if(c>=32 && c<127 && BR_ULEN < 60) BR_URL[BR_ULEN++] = (char)c;
+}
+
+static void BROWSER_APP(void){
+    if(!BR_OPEN) return;
+    const i32 wx=200, wy=140, ww=560, wh=380;
+    DRAW_WINDOW(wx, wy, ww, wh, "TARAYICI", PAN_BG);
+    if(CLK(wx+14, wy+11, 12, 12)){ BR_OPEN=0; return; }
+    if(MLB && !PMLB && HOV(wx, wy, ww, wh)) FOCUS = 4;
+
+    /* adres cubugu */
+    rr(wx+20, wy+50, ww-120, 28, 8, SAFE_BLK);
+    char shown[64]; int k=0;
+    for(int i=0;i<BR_ULEN && k<60;i++) shown[k++] = BR_URL[i];
+    if(FOCUS==4 && k<62) shown[k++] = '_';
+    shown[k] = 0;
+    ds(wx+30, wy+60, BR_ULEN==0 && FOCUS!=4 ? "ADRES (ornek: home, about)" : shown, BR_ULEN==0 && FOCUS!=4 ? CGY : CTXT, 0, 1);
+    rr(wx+ww-90, wy+50, 70, 28, 8, WIN_BLUE);
+    ds(wx+ww-76, wy+60, "GIT", CW, 0, 1);
+    if(CLK(wx+ww-90, wy+50, 70, 28)) br_go();
+
+    /* icerik */
+    rr(wx+20, wy+92, ww-40, wh-112, 10, PAN_BG);
+    if(BR_PAGE==0){
+        ds(wx+40, wy+115, "WINDOS TARAYICI", CW, 0, 1);
+        ds(wx+40, wy+135, "Hizli erisim (tiklayin):", CGY, 0, 1);
+        const char *links[3] = {"youtube.com", "wikipedia.org", "about"};
+        for(int i=0;i<3;i++){
+            i32 ly = wy+160 + i*26;
+            rr(wx+40, ly, 260, 20, 4, SAFE_BLK);
+            ds(wx+50, ly+6, links[i], CTXT, 0, 1);
+            if(CLK(wx+40, ly, 260, 20)){ BR_ULEN=0; for(int j=0; links[i][j] && BR_ULEN<60; j++) BR_URL[BR_ULEN++]=links[i][j]; br_go(); }
+        }
+        ds(wx+40, wy+260, "Not: Ag surucusu olmadigi icin internet", CGY, 0, 1);
+        ds(wx+40, wy+274, "siteleri yuklenemez.", CGY, 0, 1);
+    }
+    else if(BR_PAGE==1){
+        ds(wx+40, wy+115, "BAGLANILAMIYOR", CRD, 0, 1);
+        ds(wx+40, wy+135, "Ag surucusu yok (NIC, TCP/IP, DNS).", CTXT, 0, 1);
+        ds(wx+40, wy+155, "Adres:", CGY, 0, 1);
+        ds(wx+100, wy+155, BR_TARGET, CW, 0, 1);
+        ds(wx+40, wy+185, "Ana sayfa icin adres kutusuna 'home' yazin.", CGY, 0, 1);
+    }
+    else {
+        ds(wx+40, wy+115, "HAKKINDA", CW, 0, 1);
+        ds(wx+40, wy+135, "WindOS 18.0 OMEGA-CORE", CTXT, 0, 1);
+        ds(wx+40, wy+155, "Tarayici yerlesik sayfalari gosterir.", CGY, 0, 1);
+        ds(wx+40, wy+171, "Internet icin ag surucusu gerekir.", CGY, 0, 1);
+    }
+}
+
+static void close_focused(void){
+    if(FOCUS==1) TERM_OPEN = 0;
+    else if(FOCUS==2) NOTE_OPEN = 0;
+    else if(FOCUS==3) SN_OPEN = 0;
+    else if(FOCUS==4) BR_OPEN = 0;
+    FOCUS = 0;
+}
+
 /* ---- Tum uygulamalar icin kare basina adim ve tus dagitimi ---- */
 static void apps_tick(void){ mus_tick(); snake_tick(); }
 
 static void on_key(u8 c){
     if(!c) return;
+    if(c==27){ close_focused(); return; }
     if(FOCUS==1 && TERM_OPEN){ term_key(c); return; }
     if(FOCUS==2 && NOTE_OPEN){ note_key(c); return; }
     if(FOCUS==3 && SN_OPEN){ sn_key(c); return; }
+    if(FOCUS==4 && BR_OPEN){ br_key(c); return; }
 }
 
 static void DESKTOP(void){
@@ -797,7 +981,7 @@ static void DESKTOP(void){
     ds(SW-180, 8, "22 SUBAT | 10:26 PM", CW, 0, 1);
     
     /* WINDOWS 11 DOCK */
-    i32 dock_w = 660; i32 dock_x = (SW - dock_w) / 2; i32 dock_y = SH - 80;
+    i32 dock_w = 725; i32 dock_x = (SW - dock_w) / 2; i32 dock_y = SH - 80;
     DRAW_GLASS = 1; rr(dock_x, dock_y, dock_w, 65, 15, DOCK_BG); DRAW_GLASS = 0; rb(dock_x, dock_y, dock_w, 65, PAN_BD, 1);
     
     /* Başlat Butonu */
@@ -829,8 +1013,10 @@ static void DESKTOP(void){
     if(CLK(dock_x + 535, dock_y + 10, 45, 45)){ NOTE_OPEN = 1; FOCUS = 2; }
     rr(dock_x + 600, dock_y + 10, 45, 45, 10, CGN);
     if(CLK(dock_x + 600, dock_y + 10, 45, 45)) snake_open();
+    rr(dock_x + 665, dock_y + 10, 45, 45, 10, 0xFF4285F4u);
+    if(CLK(dock_x + 665, dock_y + 10, 45, 45)){ BR_OPEN = 1; FOCUS = 4; }
 
-    FILEMGR(); TERMINAL_APP(); TASKMGR_APP(); SYSTEM_APP(); DISPLAY_APP(); WINDAI_ASSISTANT(); MUSIC_APP(); MIKU_APP(); NOTES_APP(); SNAKE_APP(); START_MENU(); SPOTLIGHT_SEARCH();
+    FILEMGR(); TERMINAL_APP(); TASKMGR_APP(); SYSTEM_APP(); DISPLAY_APP(); WINDAI_ASSISTANT(); MUSIC_APP(); MIKU_APP(); NOTES_APP(); SNAKE_APP(); BROWSER_APP(); START_MENU(); SPOTLIGHT_SEARCH();
 
     if(INSTALLING) {
         i32 px = SW/2 - 180, py = SH/2 - 70; 
