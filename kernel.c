@@ -1369,28 +1369,36 @@ static void http_show(void){
     }
 }
 
-/* http ip[:port][/yol]: ornek http 10.0.2.2:8080/index.html */
-static void http_cmd(const char *arg){
-    if(!NIC_UP){ tl_add("AG KARTI YOK: QEMU -nic user,model=rtl8139 ile calistirin."); return; }
+/* URL: [http://]ip[:port][/yol] -> ip, port, yol. Ornek: 10.0.2.2:8080/index.html */
+static int url_parse(const char *arg, u32 *ip, u16 *port, char *path){
+    if(arg[0] == 'h' && arg[1] == 't' && arg[2] == 't' && arg[3] == 'p' && arg[4] == ':' && arg[5] == '/' && arg[6] == '/')
+        arg += 7;
     char host[32]; int hn = 0;
-    while(arg[hn] && arg[hn] != ':' && arg[hn] != '/' && hn < 31){ host[hn] = arg[hn]; hn++; }
+    while(arg[hn] && arg[hn] != ':' && arg[hn] != '/' && arg[hn] != ' ' && hn < 31){ host[hn] = arg[hn]; hn++; }
     host[hn] = 0;
-    u32 ip = 0;
-    if(!parse_ip(host, &ip)){ tl_add("KULLANIM: http ip[:port][/yol]  (ornek: http 10.0.2.2:8080/index.html)"); return; }
+    if(!parse_ip(host, ip)) return 0;
     const char *p = arg + hn;
-    u32 port = 80;
-    if(*p == ':'){ p++; port = parse_uint(p); while(*p >= '0' && *p <= '9') p++; }
-    if(port == 0 || port > 65535){ tl_add("GECERSIZ PORT."); return; }
-    char path[96];
+    u32 pt = 80;
+    if(*p == ':'){ p++; pt = parse_uint(p); while(*p >= '0' && *p <= '9') p++; }
+    if(pt == 0 || pt > 65535) return 0;
+    *port = (u16)pt;
     path[0] = '/'; path[1] = 0;
     if(*p == '/'){
         int k = 0;
         while(p[k] && p[k] != ' ' && k < 94){ path[k] = p[k]; k++; }
         path[k] = 0;
     }
+    return 1;
+}
+
+/* http ip[:port][/yol]: ornek http 10.0.2.2:8080/index.html */
+static void http_cmd(const char *arg){
+    if(!NIC_UP){ tl_add("AG KARTI YOK: QEMU -nic user,model=rtl8139 ile calistirin."); return; }
+    u32 ip = 0; u16 port = 80; char path[96];
+    if(!url_parse(arg, &ip, &port, path)){ tl_add("KULLANIM: http ip[:port][/yol]  (ornek: http 10.0.2.2:8080/index.html)"); return; }
     char ipst[16];
     ip_str(ip, ipst);
-    if(!http_get(ip, (u16)port, path, ipst)){ tl_add("BAGLANTI KURULAMADI (ZAMAN ASIMI)."); return; }
+    if(!http_get(ip, port, path, ipst)){ tl_add("BAGLANTI KURULAMADI (ZAMAN ASIMI)."); return; }
     http_show();
 }
 
@@ -1482,19 +1490,156 @@ static void TERMINAL_APP(void){
     ds(cx + 16, cy + ch - 26, pr, CGN, 0, 1);
 }
 
-/* ---- TARAYICI: ag surucusu yok, yalnizca yerlesik sayfalar ---- */
+/* ---- HTML: basit ayristirici (baslik, paragraf, baslik etiketi, baglanti, liste) ---- */
+#define BR_MAXL 240
+#define BR_COLS 58
+static char BR_LN[BR_MAXL][BR_COLS + 1];
+static u8   BR_KD[BR_MAXL];            /* 0 metin, 1 baslik, 2 baglanti */
+static int  BR_NL = 0;
+static int  BR_SCROLL = 0;
+static char BR_TITLE[64];
+static char BR_CUR[BR_COLS + 1];
+static int  BR_CN = 0;
+static u8   BR_CK = 0;
+static u8   BR_STYLE = 0;
+
+static void br_flush(void){
+    while(BR_CN > 0 && BR_CUR[BR_CN - 1] == ' ') BR_CN--;
+    if(BR_CN > 0 && BR_NL < BR_MAXL){
+        for(int i = 0; i < BR_CN; i++) BR_LN[BR_NL][i] = BR_CUR[i];
+        BR_LN[BR_NL][BR_CN] = 0;
+        BR_KD[BR_NL] = BR_CK;
+        BR_NL++;
+    }
+    BR_CN = 0;
+}
+
+/* Blok sonu: satir bitir, arada bos satir birak */
+static void br_block(void){
+    br_flush();
+    if(BR_NL > 0 && BR_LN[BR_NL - 1][0] && BR_NL < BR_MAXL){
+        BR_LN[BR_NL][0] = 0; BR_KD[BR_NL] = 0; BR_NL++;
+    }
+}
+
+static void br_putc(char c){
+    if(c == ' ' && (BR_CN == 0 || BR_CUR[BR_CN - 1] == ' ')) return;
+    if(BR_CN == 0) BR_CK = BR_STYLE;
+    if(BR_CN >= BR_COLS){
+        br_flush();
+        if(c == ' ') return;
+    }
+    BR_CUR[BR_CN++] = c;
+}
+
+static void html_parse(const u8 *s, int n){
+    int skip = 0, in_title = 0, tl = 0;
+    char skipname[10] = {0};
+    BR_NL = 0; BR_CN = 0; BR_STYLE = 0; BR_SCROLL = 0; BR_TITLE[0] = 0;
+    int i = 0;
+    while(i < n){
+        u8 c = s[i];
+        if(c == '<'){
+            int j = i + 1, closing = 0, nl = 0;
+            char name[10];
+            if(j < n && s[j] == '/'){ closing = 1; j++; }
+            while(j < n && nl < 9 && ((s[j] >= 'a' && s[j] <= 'z') || (s[j] >= 'A' && s[j] <= 'Z') || (s[j] >= '0' && s[j] <= '9'))){
+                char ch = (char)s[j];
+                if(ch >= 'A' && ch <= 'Z') ch = (char)(ch + 32);
+                name[nl++] = ch; j++;
+            }
+            name[nl] = 0;
+            while(j < n && s[j] != '>') j++;
+            i = j + 1;
+            if(skip){ if(closing && str_eq(name, skipname)) skip = 0; continue; }
+            if(!closing && (str_eq(name, "script") || str_eq(name, "style"))){
+                skip = 1; kcpy(skipname, name); continue;
+            }
+            if(str_eq(name, "title")){ in_title = !closing; continue; }
+            if(str_eq(name, "br")){ br_flush(); continue; }
+            if(str_eq(name, "p") || str_eq(name, "div") || str_eq(name, "ul") || str_eq(name, "ol") || str_eq(name, "tr") || str_eq(name, "table")){
+                br_block(); continue;
+            }
+            if(str_eq(name, "li")){
+                br_block();
+                if(!closing){ br_putc('-'); br_putc(' '); }
+                continue;
+            }
+            if(name[0] == 'h' && name[1] >= '1' && name[1] <= '6' && !name[2]){
+                br_block(); BR_STYLE = closing ? 0 : 1;
+                if(closing) br_block();
+                continue;
+            }
+            if(str_eq(name, "a")){ BR_STYLE = closing ? 0 : 2; continue; }
+            continue;
+        }
+        if(skip){ i++; continue; }
+        if(in_title){
+            if(c >= 32 && c < 127 && tl < 60){ BR_TITLE[tl++] = (char)c; BR_TITLE[tl] = 0; }
+            i++; continue;
+        }
+        if(c == '&'){
+            int j = i + 1, el = 0;
+            char en[8];
+            while(j < n && el < 7 && s[j] != ';' && s[j] != ' ' && s[j] != '<'){ en[el++] = (char)s[j]; j++; }
+            en[el] = 0;
+            if(j < n && s[j] == ';'){
+                char out = 0;
+                if(str_eq(en, "amp")) out = '&';
+                else if(str_eq(en, "lt")) out = '<';
+                else if(str_eq(en, "gt")) out = '>';
+                else if(str_eq(en, "quot")) out = '"';
+                else if(str_eq(en, "nbsp")) out = ' ';
+                else if(str_eq(en, "apos")) out = '\'';
+                if(out){ br_putc(out); i = j + 1; continue; }
+            }
+            br_putc('&'); i++; continue;
+        }
+        if(c == '\n' || c == '\r' || c == '\t') br_putc(' ');
+        else if(c >= 32 && c < 127) br_putc((char)c);
+        else if(c >= 128){                       /* UTF-8 cok baytli: tek '?' */
+            if(BR_CN == 0 || BR_CUR[BR_CN - 1] != '?') br_putc('?');
+        }
+        i++;
+    }
+    br_flush();
+}
+
+/* TCP_RX icindeki yanitin govdesini ayristirir */
+static void html_from_response(void){
+    int b = 0;
+    for(int i = 0; i + 3 < TCP_RXN; i++){
+        if(TCP_RX[i] == '\r' && TCP_RX[i + 1] == '\n' && TCP_RX[i + 2] == '\r' && TCP_RX[i + 3] == '\n'){ b = i + 4; break; }
+    }
+    html_parse(TCP_RX + b, TCP_RXN - b);
+}
+
+/* ---- TARAYICI: IP adresi ile sayfa acar (ornek 10.0.2.2:8080/index.html) ---- */
 static char BR_URL[64]; static int BR_ULEN = 0;
 static char BR_TARGET[64];
-static int BR_PAGE = 0; /* 0 ana sayfa, 1 ag yok, 2 hakkinda */
+static char BR_ERR[64];
+static int BR_PAGE = 0; /* 0 ana sayfa, 1 hata, 2 hakkinda, 3 yuklenen sayfa */
 
 static void br_go(void){
     BR_URL[BR_ULEN] = 0;
-    if(BR_ULEN == 0 || str_eq(BR_URL, "home")) BR_PAGE = 0;
-    else if(str_eq(BR_URL, "about")) BR_PAGE = 2;
-    else { BR_PAGE = 1; kcpy(BR_TARGET, BR_URL); }
+    if(BR_ULEN == 0 || str_eq(BR_URL, "home")){ BR_PAGE = 0; return; }
+    if(str_eq(BR_URL, "about")){ BR_PAGE = 2; return; }
+    kcpy(BR_TARGET, BR_URL);
+    if(!NIC_UP){ BR_PAGE = 1; kcpy(BR_ERR, "AG KARTI YOK (QEMU -nic user,model=rtl8139)"); return; }
+    u32 ip = 0; u16 port = 80; char path[96];
+    if(!url_parse(BR_URL, &ip, &port, path)){
+        BR_PAGE = 1; kcpy(BR_ERR, "ADRES: IP:PORT/YOL  (ornek 10.0.2.2:8080/index.html)"); return;
+    }
+    char host[16];
+    ip_str(ip, host);
+    if(!http_get(ip, port, path, host)){ BR_PAGE = 1; kcpy(BR_ERR, "BAGLANTI KURULAMADI (ZAMAN ASIMI)"); return; }
+    html_from_response();
+    BR_PAGE = 3;
 }
 
 static void br_key(u8 c){
+    if(c == KEY_UP){ if(BR_SCROLL > 0) BR_SCROLL--; return; }
+    if(c == KEY_DOWN){ if(BR_SCROLL + 1 < BR_NL) BR_SCROLL++; return; }
     if(c == 8){ if(BR_ULEN > 0) BR_ULEN--; return; }
     if(c == '\n' || c == '\r'){ br_go(); return; }
     if(c >= 32 && c < 127 && BR_ULEN < 60) BR_URL[BR_ULEN++] = (char)c;
@@ -1521,21 +1666,34 @@ static void BROWSER_APP(void){
     rr(wx + 20, wy + 92, ww - 40, wh - 112, 10, PAN_BG);
     if(BR_PAGE == 0){
         ds(wx + 40, wy + 115, "WINDOS TARAYICI", CW, 0, 1);
-        ds(wx + 40, wy + 135, "Ag surucusu yok: internet sayfalari acilamaz.", CGY, 0, 1);
-        ds(wx + 40, wy + 155, "Adres kutusuna 'about' yazip Enter'a basin.", CGY, 0, 1);
+        ds(wx + 40, wy + 135, "Sayfa icin IP adresi yazin ve Enter'a basin:", CGY, 0, 1);
+        ds(wx + 40, wy + 155, "ornek: 10.0.2.2:8080/index.html", CTXT, 0, 1);
+        ds(wx + 40, wy + 185, "Yerel ayarlar icin 'about' yazin.", CGY, 0, 1);
     }
     else if(BR_PAGE == 1){
-        ds(wx + 40, wy + 115, "BAGLANILAMIYOR", CRD, 0, 1);
-        ds(wx + 40, wy + 135, "Ag surucusu yok (NIC, TCP/IP, DNS).", CTXT, 0, 1);
+        ds(wx + 40, wy + 115, "BAGLANILAMADI", CRD, 0, 1);
+        ds(wx + 40, wy + 135, BR_ERR, CTXT, 0, 1);
         ds(wx + 40, wy + 155, "Adres:", CGY, 0, 1);
         ds(wx + 100, wy + 155, BR_TARGET, CW, 0, 1);
-        ds(wx + 40, wy + 185, "Ana sayfa icin adres kutusuna 'home' yazin.", CGY, 0, 1);
+    }
+    else if(BR_PAGE == 3){
+        if(BR_TITLE[0]){
+            char tt[72]; kcpy(tt, "BASLIK: "); kcpy(tt + klen(tt), BR_TITLE);
+            ds(wx + 30, wy + 100, tt, CGY, 0, 1);
+        }
+        int vis = 16;
+        for(int r = 0; r < vis && BR_SCROLL + r < BR_NL; r++){
+            int idx = BR_SCROLL + r;
+            u32 col = (BR_KD[idx] == 1) ? CW : (BR_KD[idx] == 2) ? WIN_BLUE : CTXT;
+            ds(wx + 30, wy + 116 + r * 14, BR_LN[idx], col, 0, 1);
+        }
+        if(BR_NL == 0) ds(wx + 30, wy + 116, "(sayfada metin yok)", CGY, 0, 1);
     }
     else {
         ds(wx + 40, wy + 115, "HAKKINDA", CW, 0, 1);
         ds(wx + 40, wy + 135, "WindOS 18.1", CTXT, 0, 1);
-        ds(wx + 40, wy + 155, "Tarayici yerlesik sayfalari gosterir.", CGY, 0, 1);
-        ds(wx + 40, wy + 171, "Internet icin ag surucusu gerekir.", CGY, 0, 1);
+        ds(wx + 40, wy + 155, "Tarayici IP adresiyle sayfa acar (HTTP).", CGY, 0, 1);
+        ds(wx + 40, wy + 171, "Ok tuslari ile sayfayi kaydirin.", CGY, 0, 1);
     }
 }
 
