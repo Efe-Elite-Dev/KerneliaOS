@@ -1053,6 +1053,68 @@ static void BOOT_SCREEN(void) {
     if(AI_TIMER >= 150) AI_BOOT_PHASE = 2; /* MASANÜSTÜNE GEÇİŞ */
 }
 
+/* ---- Zamanlayici: PIC yeniden eslestirme, IDT, PIT IRQ0 ----
+   Ana dongu her karede bir kez calisir; kareler arasinda islemci hlt ile
+   uyur (eski bos dongu CPU'yu %100 mesgul tutuyordu). Klavye ve fare
+   hala yoklama (polling) ile okunur; yalnizca IRQ0 acik. */
+#define FRAME_HZ 50
+static volatile u32 TICKS = 0;
+
+struct __attribute__((packed)) IdtEntry { u16 off_lo; u16 sel; u8 zero; u8 type; u16 off_hi; };
+struct __attribute__((packed)) IdtPtr  { u16 limit; u32 base; };
+static struct IdtEntry IDT[256];
+
+__attribute__((interrupt, target("general-regs-only")))
+static void timer_isr(void *frame){
+    (void)frame;
+    TICKS++;
+    outb(0x20, 0x20);                       /* EOI: ana PIC */
+}
+
+static void idt_gate(u8 n, u32 handler, u16 cs){
+    IDT[n].off_lo = (u16)(handler & 0xFFFF);
+    IDT[n].sel    = cs;                     /* GRUB'un 32-bit kod segmenti (calisirken okunur) */
+    IDT[n].zero   = 0;
+    IDT[n].type   = 0x8E;                   /* mevcut, DPL 0, 32-bit kesme kapisi */
+    IDT[n].off_hi = (u16)((handler >> 16) & 0xFFFF);
+}
+
+/* PIC: IRQ0 -> 0x20..0x27, IRQ8 -> 0x28..; yalnizca IRQ0 acik */
+static void pic_setup(void){
+    outb(0x20, 0x11); outb(0xA0, 0x11);     /* ICW1: baslat, ICW4 gerekli */
+    outb(0x21, 0x20); outb(0xA1, 0x28);     /* ICW2: vektor tabani */
+    outb(0x21, 0x04); outb(0xA1, 0x02);     /* ICW3: kaskad baglantisi */
+    outb(0x21, 0x01); outb(0xA1, 0x01);     /* ICW4: 8086 modu */
+    outb(0x21, 0xFE); outb(0xA1, 0xFF);     /* ana: yalniz IRQ0 acik; bagli: hepsi kapali */
+}
+
+/* PIT kanal 0: kare dalgasi, verilen Hz */
+static void pit_init(u32 hz){
+    u32 div = 1193182u / hz;
+    outb(0x43, 0x36);
+    outb(0x40, (u8)(div & 0xFF));
+    outb(0x40, (u8)((div >> 8) & 0xFF));
+}
+
+static void timer_init(void){
+    u16 cs;
+    __asm__ volatile("mov %%cs, %0" : "=r"(cs));   /* GRUB CS'yi 0x08 degil 0x10 birakabilir */
+    idt_gate(0x20, (u32)(unsigned long)timer_isr, cs);
+    struct IdtPtr p;
+    p.limit = (u16)(sizeof(IDT) - 1);
+    p.base  = (u32)(unsigned long)IDT;
+    __asm__ volatile("lidt %0" :: "m"(p));
+    pic_setup();
+    pit_init(FRAME_HZ);
+    __asm__ volatile("sti");
+}
+
+/* Bir sonraki zamanlayici tick'ine kadar uyur */
+static void frame_wait(void){
+    u32 t = TICKS;
+    while(TICKS == t) __asm__ volatile("hlt");
+}
+
 void kernel_main(multiboot_info_t *mbi){
     u8 bpp_bits = mbi->framebuffer_bpp; 
     if(bpp_bits == 0) bpp_bits = 32; 
@@ -1079,12 +1141,13 @@ void kernel_main(multiboot_info_t *mbi){
     if(flags & 1) { u32 mem_upper_kb = *((u32*)((u8*)mbi + 8)); SYS_RAM_MB = (mem_upper_kb / 1024) + 1; } else { SYS_RAM_MB = 2048; }
 
     mouse_init(); load_root_dir(); term_init();
+    timer_init();
     
     while(1){ 
+        frame_wait();
         ps2_pump(); mouse_poll(); for(int ki=0; ki<8; ki++) on_key(kbd_poll()); apps_tick(); 
         if(AI_BOOT_PHASE < 2) { BOOT_SCREEN(); } 
         else { DESKTOP(); CUR(); }
         swap_buffers(); 
-        volatile int x=50000; while(x--)__asm__("nop"); 
     }
 }
