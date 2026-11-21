@@ -3,7 +3,7 @@ name: WindOS Quantum Engine CI/CD
 # Workflow'un ne zaman çalışacağını belirliyoruz (Kodu pushladığında otomatik başlar)
 on:
   push:
-    branches: [ "main", "master" ]
+    branches: [ "main", "master", "feature/**" ]   # feature dallari da derlenir (ISO artifact)
     tags: [ "v*" ]              # v18.1 gibi bir etiket gonderilince sürüm olusturulur
   pull_request:
     branches: [ "main", "master" ]
