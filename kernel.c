@@ -28,14 +28,14 @@ static u32 BPP = 4;
 static u32 BB[MAX_SW * MAX_SH];          /* arka tampon, 0xAARRGGBB */
 
 static int DIRTY = 1;                    /* bu karede yeniden cizim gerekli */
+#define FRAME_HZ 50
+static volatile u32 TICKS = 0;           /* zamanlayici tick sayaci (FRAME_HZ/sn) */
 static int ANIM_PREV = 0;                /* onceki karede animasyon vardi */
 static u32 SYS_RAM_MB = 0;
-static int CPU_USAGE = 14;
 
 /* ---- Acilis (AI tarama) ekrani ---- */
 static int AI_BOOT_PHASE = 0;
 static int AI_TIMER = 0;
-static int AI_MESSAGE_TIMER = 0;
 
 /* ---- Uygulama durumlari ---- */
 static int START_MENU_OPEN = 0;
@@ -49,10 +49,7 @@ static int MUS_OPEN = 0, MIKU_OPEN = 0, NOTE_OPEN = 0, SN_OPEN = 0;
 static int FOCUS = 0;
 static i32 FX = 100, FY = 80, FD = 0, FDX = 0, FDY = 0;
 static i32 CX = 150, CY = 100, CD = 0, CDX = 0, CDY = 0;
-static int INSTALLING = 0, INSTALL_PROG = 0;
 
-static int CURRENT_RES = 2;
-static const char *RES_NAMES[] = { "480P", "720P", "1080P", "4K", "8K", "16K", "32K" };
 
 /* ---- Renk paleti ---- */
 #define CW       0xFFFFFFFFu
@@ -97,17 +94,6 @@ static void itoa(int n, char s[]) {
     if(sign < 0) s[i++] = '-';
     s[i] = '\0';
     for(int j = 0, k = i - 1; j < k; j++, k--){ char t = s[j]; s[j] = s[k]; s[k] = t; }
-}
-static int is_ext(const char *n, const char *ext) {
-    int nl = (int)klen(n), el = (int)klen(ext);
-    if(nl <= el) return 0;
-    for(int i = 0; i < el; i++){
-        char c1 = n[nl - el + i], c2 = ext[i];
-        if(c1 >= 'a' && c1 <= 'z') c1 -= 32;
-        if(c2 >= 'a' && c2 <= 'z') c2 -= 32;
-        if(c1 != c2) return 0;
-    }
-    return 1;
 }
 static int has_prefix(const char *s, const char *p) {
     while(*p){ if(*s != *p) return 0; s++; p++; }
@@ -377,26 +363,7 @@ static void CUR(void){
 /* ========================================================================= */
 /* DOSYA GEZGINI (sahte dosya listesi)                                       */
 /* ========================================================================= */
-typedef struct { char n[32]; int is_dir; } FAT_File;
-static FAT_File fat32_files[32];
-static int fat32_file_count = 0;
-static int INSIDE_DIR = 0;
 
-static void load_root_dir(void){
-    INSIDE_DIR = 0;
-    kcpy(fat32_files[0].n, "M8_PRO_SYNC.EXE");   fat32_files[0].is_dir = 0;
-    kcpy(fat32_files[1].n, "PROJECT_SEKAI.APK"); fat32_files[1].is_dir = 0;
-    kcpy(fat32_files[2].n, "WINDOS_UPDATE.WPK"); fat32_files[2].is_dir = 0;
-    kcpy(fat32_files[3].n, "HATSUNE_MIKU.WAV");  fat32_files[3].is_dir = 0;
-    kcpy(fat32_files[4].n, "GIZLI_DOSYALAR");    fat32_files[4].is_dir = 1;
-    fat32_file_count = 5;
-}
-static void load_sub_dir(void){
-    INSIDE_DIR = 1;
-    kcpy(fat32_files[0].n, "2012_SUBAT_22.TXT"); fat32_files[0].is_dir = 0;
-    kcpy(fat32_files[1].n, "SIFRELERIM.TXT");    fat32_files[1].is_dir = 0;
-    fat32_file_count = 2;
-}
 
 /* Pencere cercevesi, baslik, kapatma dugmesi (tiklanirsa uygulama kapanir) */
 static void DRAW_WINDOW(i32 x, i32 y, i32 w, i32 h, const char *title, u32 b_col){
@@ -418,23 +385,19 @@ static void DRAW_WINDOW(i32 x, i32 y, i32 w, i32 h, const char *title, u32 b_col
     }
 }
 
-static int CPU_TICK = 0;
 static void TASKMGR_APP(void){
     if(!TASKMGR_OPEN) return;
-    DRAW_WINDOW(300, 150, 400, 300, "GOREV YONETICISI (WINDOWS)", PAN_BG);
-    ds(320, 200, "UYGULAMALAR", CGY, 0, 1);
-    ds(320, 230, "1. WINDOS MASAUSTU (SISTEM)", CW, 0, 1);
-    ds(320, 250, "2. KERNEL.BIN (CEKIRDEK)", CW, 0, 1);
-    ds(320, 270, "3. VESA DRAW ENGINE", CW, 0, 1);
-    ds(320, 320, "PERFORMANS GRAFIGI", CGY, 0, 1);
-    ds(320, 345, "CPU:", CW, 0, 1);
-    rr(360, 345, 200, 10, 4, PAN_BD);
-    rr(360, 345, CPU_USAGE * 2, 10, 4, WIN_BLUE);
-    ds(320, 375, "RAM:", CW, 0, 1);
-    rr(360, 375, 200, 10, 4, PAN_BD);
-    rr(360, 375, 45, 10, 4, AI_PURP);
-    /* Sahte CPU grafigi: her kare ilerler (canli gorunum icin) */
-    if(++CPU_TICK >= 10){ CPU_TICK = 0; CPU_USAGE = (CPU_USAGE + 1) % 100; }
+    DRAW_WINDOW(300, 150, 400, 220, "GOREV YONETICISI", PAN_BG);
+    char b[48];
+    kcpy(b, "CALISMA SURESI: ");
+    itoa((int)(TICKS / FRAME_HZ), b + klen(b));
+    kcpy(b + klen(b), " SN");
+    ds(320, 200, b, CW, 0, 1);
+    kcpy(b, "BELLEK: ");
+    if(SYS_RAM_MB){ itoa((int)SYS_RAM_MB, b + klen(b)); kcpy(b + klen(b), " MB"); }
+    else kcpy(b + klen(b), "BILINMIYOR");
+    ds(320, 230, b, CW, 0, 1);
+    ds(320, 280, "CPU kullanimi henuz olculmuyor.", CGY, 0, 1);
 }
 
 static void START_MENU(void){
@@ -458,9 +421,6 @@ static void START_MENU(void){
     ds(sm_x + 290, sm_y + 140, "GOREV YON", CTXT, 0, 1);
     if(CLK(sm_x + 290, sm_y + 70, 60, 60)){ TASKMGR_OPEN = 1; START_MENU_OPEN = 0; }
 
-    fr(sm_x + 20, sm_y + 430, sm_w - 40, 1, PAN_BD);
-    disc(sm_x + 50, sm_y + 460, 15, WIN_BLUE);
-    ds(sm_x + 75, sm_y + 455, "ADMIN KULLANICISI", CW, 0, 1);
 }
 
 static void FILEMGR(void){
@@ -477,95 +437,41 @@ static void FILEMGR(void){
         } else FD = 0;
     }
     DRAW_WINDOW(fx, fy, fw, fh, "DOSYA GEZGINI", PAN_BG);
-    frg(fx, fy + 36, 180, fh - 36, SIDEBAR);
-    fr(fx + 180, fy + 36, 1, fh - 36, PAN_BD);
-    ds(fx + 20, fy + 60, "BILGISAYAR", CGY, 0, 1);
-    static int FU = 0;
-    if(CLK(fx + 10, fy + 80, 160, 30)){ FU = 0; load_root_dir(); }
-    rr(fx + 10, fy + 80, 160, 30, 4, !FU ? PAN_BD : SIDEBAR);
-    ds(fx + 20, fy + 90, "YEREL DISK (C:)", CW, 0, 1);
-    if(CLK(fx + 10, fy + 120, 160, 30)){ FU = 1; load_root_dir(); }
-    rr(fx + 10, fy + 120, 160, 30, 4, FU ? PAN_BD : SIDEBAR);
-    fr(fx + 20, fy + 130, 14, 10, LIN_ORG);
-    ds(fx + 40, fy + 130, "USB SURUCU", CW, 0, 1);
-    if(INSIDE_DIR){
-        rr(fx + 190, fy + 45, 80, 25, 4, PAN_BD);
-        ds(fx + 200, fy + 53, "< GERI", CW, 0, 1);
-        if(CLK(fx + 190, fy + 45, 80, 25)) load_root_dir();
-    }
-    frg(fx + 181, fy + fh - 40, fw - 181, 40, SIDEBAR);
-    ds(fx + 195, fy + fh - 25, "KULLANILAN: 1.4 GB", CTXT, 0, 1);
-    rr(fx + 330, fy + fh - 25, 200, 12, 6, PAN_BD);
-    rr(fx + 330, fy + fh - 25, 140, 12, 6, WIN_BLUE);
-    ds(fx + 540, fy + fh - 25, "MAKSIMUM LIMIT: LIMITSIZ", CGN, 0, 1);
-    for(int i = 0; i < fat32_file_count; i++){
-        i32 ex = fx + 200 + (i % 4) * 120, ey = fy + 85 + (i / 4) * 100;
-        rrg(ex, ey, 100, 70, 6, HOV(ex, ey, 100, 70) ? PAN_BD : PAN_BG);
-        if(fat32_files[i].is_dir){
-            fr(ex + 30, ey + 15, 18, 12, XUB_BLU);
-            rr(ex + 20, ey + 23, 60, 36, 4, XUB_BLU);
-        } else {
-            rr(ex + 38, ey + 15, 24, 30, 2, CW);
-            const char *n = fat32_files[i].n;
-            u32 tag = CGY;
-            if(is_ext(n, ".APK")) tag = AND_GRN;
-            else if(is_ext(n, ".EXE")) tag = WIN_BLUE;
-            else if(is_ext(n, ".WPK")) tag = AI_PURP;
-            else if(is_ext(n, ".DEB")) tag = DEB_ORG;
-            fr(ex + 42, ey + 30, 16, 2, tag);
-        }
-        dsc(ex, ey + 65, 100, fat32_files[i].n, CTXT, 0, 1);
-        if(CLK(ex, ey, 100, 70)){
-            if(fat32_files[i].is_dir) load_sub_dir();
-            else { INSTALLING = 1; INSTALL_PROG = 0; }
-        }
-    }
+    dsc(fx, fy + fh / 2 - 16, fw, "DEPOLAMA SURUCUSU YOK", CGY, 0, 1);
+    dsc(fx, fy + fh / 2 + 6, fw, "Dosyalar okunamiyor.", CGY, 0, 1);
 }
 
 static void DISPLAY_APP(void){
     if(!DISP_OPEN) return;
-    DRAW_WINDOW(280, 120, 450, 450, "EKRAN YONETICISI", PAN_BG);
-    ds(300, 170, "OMNI-DISPLAY ENGINE V18.0", WIN_BLUE, 0, 1);
-    ds(300, 190, "LUTFEN RENDER KALITESINI SECIN:", CTXT, 0, 1);
-    for(int i = 0; i < 7; i++){
-        i32 by = 220 + i * 30;
-        u32 col = (CURRENT_RES == i) ? WIN_BLUE : SIDEBAR;
-        if(i == 6 && CURRENT_RES == i) col = AI_PURP;
-        rr(300, by, 300, 25, 5, col);
-        ds(315, by + 8, RES_NAMES[i], CW, 0, 1);
-        if(CLK(300, by, 300, 25)) CURRENT_RES = i;
-    }
-    ds(300, 450, "MEVCUT COZUNURLUK DURUMU:", CGY, 0, 1);
-    ds(300, 470, RES_NAMES[CURRENT_RES], CGN, 0, 1);
+    DRAW_WINDOW(280, 120, 450, 200, "EKRAN BILGISI", PAN_BG);
+    char b[48];
+    kcpy(b, "COZUNURLUK: ");
+    itoa((int)SW, b + klen(b)); kcpy(b + klen(b), " x "); itoa((int)SH, b + klen(b));
+    ds(300, 170, b, CW, 0, 1);
+    kcpy(b, "RENK DERINLIGI: ");
+    itoa((int)BPP * 8, b + klen(b)); kcpy(b + klen(b), " BIT");
+    ds(300, 195, b, CW, 0, 1);
 }
 
 static void SYSTEM_APP(void){
     if(!SYS_OPEN) return;
-    DRAW_WINDOW(250, 150, 500, 350, "SISTEM BILGISI", PAN_BG);
-    ds(280, 210, "ISLETIM SISTEMI: WINDOS V18.0 OMEGA-CORE", WIN_BLUE, 0, 1);
-    ds(280, 240, "MIMARI: X86 HYBRID (MAC + WIN + LINUX)", CTXT, 0, 1);
+    DRAW_WINDOW(250, 150, 500, 250, "SISTEM BILGISI", PAN_BG);
+    ds(280, 200, "ISLETIM SISTEMI: WINDOS 18.1", WIN_BLUE, 0, 1);
+    ds(280, 230, "MIMARI: X86 (32 BIT)", CTXT, 0, 1);
     char buf[64]; kcpy(buf, "FIZIKSEL RAM: ");
-    itoa((int)SYS_RAM_MB, buf + klen(buf)); kcpy(buf + klen(buf), " MB");
-    ds(280, 270, buf, CGN, 0, 1);
-    ds(280, 300, "BAGLI CIHAZ: POCO M8 PRO (EFE TUNA)", WIN_BLUE, 0, 1);
+    if(SYS_RAM_MB){ itoa((int)SYS_RAM_MB, buf + klen(buf)); kcpy(buf + klen(buf), " MB"); }
+    else kcpy(buf + klen(buf), "BILINMIYOR");
+    ds(280, 260, buf, CGN, 0, 1);
+    ds(280, 300, "Depolama ve ag surucusu henuz yok.", CGY, 0, 1);
 }
 
 static void WINDAI_ASSISTANT(void){
     if(!AI_OPEN) return;
-    i32 aw = 500, ah = 400;
+    i32 aw = 500, ah = 200;
     i32 ax = ((i32)SW - aw) / 2, ay = ((i32)SH - ah) / 2;
-    DRAW_WINDOW(ax, ay, aw, ah, "WINDAI QUANTUM CORE", BG_BASE);
-    rr(ax + 20, ay + 70, 300, 40, 8, PAN_BG);
-    ds(ax + 30, ay + 85, "EFE! V18.0 OMEGA-CORE AKTIF.", CTXT, 0, 1);
-    rr(ax + aw - 320, ay + 130, 300, 40, 8, WIN_BLUE);
-    ds(ax + aw - 310, ay + 145, "BUTUN SISTEMLER TEK BIR CEKIRDEKTE MI?", CW, 0, 1);
-    rr(ax + 20, ay + 190, 400, 60, 8, PAN_BG);
-    ds(ax + 30, ay + 205, "EVET! AI OTONOM TARAMA, MAC SPOTLIGHT, LINUX", CTXT, 0, 1);
-    ds(ax + 30, ay + 225, "TERMINAL VE WIN11 BASLAT MENUSU EKLENDI.", CTXT, 0, 1);
-    rr(ax + 20, ah + ay - 50, aw - 40, 35, 17, PAN_BG);
-    ds(ax + 35, ah + ay - 38, "BIR SEYLER YAZIN... (SIMULASYON MODU)", CGY, 0, 1);
-    disc(ax + aw - 40, ah + ay - 32, 12, AI_PURP);
-    ds(ax + aw - 44, ah + ay - 36, ">", CW, 0, 1);
+    DRAW_WINDOW(ax, ay, aw, ah, "WINDAI", BG_BASE);
+    ds(ax + 20, ay + 80, "WINDAI henuz bagli degil.", CTXT, 0, 1);
+    ds(ax + 20, ay + 110, "Yapay zeka modeli eklenmedi; bu pencere su an bos.", CGY, 0, 1);
 }
 
 /* ========================================================================= */
@@ -907,7 +813,7 @@ static void term_exec(void){
     line[n] = 0;
 
     char pr[TL_W];
-    app_str(pr, "EFE@WINDOS:~$ ", line);
+    app_str(pr, "WINDOS:~$ ", line);
     tl_add(pr);
     TIN_LEN = 0;
 
@@ -924,7 +830,8 @@ static void term_exec(void){
     else if(str_eq(cmd, "ver"))   tl_add("WindOS 18.1 (x86, 32-bit)");
     else if(str_eq(cmd, "mem")){
         char b[TL_W]; kcpy(b, "FIZIKSEL RAM (MULTIBOOT): ");
-        itoa((int)SYS_RAM_MB, b + klen(b)); kcpy(b + klen(b), " MB");
+        if(SYS_RAM_MB){ itoa((int)SYS_RAM_MB, b + klen(b)); kcpy(b + klen(b), " MB"); }
+        else kcpy(b + klen(b), "BILINMIYOR");
         tl_add(b);
     }
     else if(str_eq(cmd, "echo"))  tl_add(arg);
@@ -976,7 +883,7 @@ static void TERMINAL_APP(void){
     for(i32 i = start; i < TL_N; i++) ds(cx + 16, cy + 46 + (i - start) * 12, TLINES[i], CTXT, 0, 1);
 
     char pr[TL_W];
-    app_str(pr, "EFE@WINDOS:~$ ", "");
+    app_str(pr, "WINDOS:~$ ", "");
     int k = (int)klen(pr);
     for(int i = 0; i < TIN_LEN && k < TL_W - 2; i++) pr[k++] = TIN[i];
     if(FOCUS == 1 && k < TL_W - 1) pr[k++] = '_';
@@ -1023,20 +930,8 @@ static void BROWSER_APP(void){
     rr(wx + 20, wy + 92, ww - 40, wh - 112, 10, PAN_BG);
     if(BR_PAGE == 0){
         ds(wx + 40, wy + 115, "WINDOS TARAYICI", CW, 0, 1);
-        ds(wx + 40, wy + 135, "Hizli erisim (tiklayin):", CGY, 0, 1);
-        const char *links[3] = { "youtube.com", "wikipedia.org", "about" };
-        for(int i = 0; i < 3; i++){
-            i32 ly = wy + 160 + i * 26;
-            rr(wx + 40, ly, 260, 20, 4, SAFE_BLK);
-            ds(wx + 50, ly + 6, links[i], CTXT, 0, 1);
-            if(CLK(wx + 40, ly, 260, 20)){
-                BR_ULEN = 0;
-                for(int j = 0; links[i][j] && BR_ULEN < 60; j++) BR_URL[BR_ULEN++] = links[i][j];
-                br_go();
-            }
-        }
-        ds(wx + 40, wy + 260, "Not: Ag surucusu olmadigi icin internet", CGY, 0, 1);
-        ds(wx + 40, wy + 274, "siteleri yuklenemez.", CGY, 0, 1);
+        ds(wx + 40, wy + 135, "Ag surucusu yok: internet sayfalari acilamaz.", CGY, 0, 1);
+        ds(wx + 40, wy + 155, "Adres kutusuna 'about' yazip Enter'a basin.", CGY, 0, 1);
     }
     else if(BR_PAGE == 1){
         ds(wx + 40, wy + 115, "BAGLANILAMIYOR", CRD, 0, 1);
@@ -1204,8 +1099,7 @@ static void DESKTOP(void){
 
     /* UST CUBUK */
     frg(0, 0, (i32)SW, 25, PAN_BG);
-    ds(15, 8, "[ APPLE LOGO ]   WINDOS   DOSYA   DUZENLE   GIT   PENCERE   YARDIM", CTXT, 0, 1);
-    ds((i32)SW - 180, 8, "22 SUBAT | 10:26 PM", CW, 0, 1);
+    ds(15, 8, "WINDOS", CTXT, 0, 1);
     /* Arama simgesi: Spotlight'i acar/kapatir */
     disc((i32)SW - 212, 10, 5, CW);
     disc((i32)SW - 212, 10, 3, PAN_BG);
@@ -1252,43 +1146,15 @@ static void DESKTOP(void){
     MUSIC_APP(); MIKU_APP(); NOTES_APP(); SNAKE_APP(); BROWSER_APP();
     START_MENU(); SPOTLIGHT_SEARCH();
 
-    if(INSTALLING){
-        i32 px = (i32)SW / 2 - 180, py = (i32)SH / 2 - 70;
-        fr(px + 8, py + 8, 360, 140, SHADOW);
-        rrg(px, py, 360, 140, 12, WIN_BLUE);
-        ds(px + 20, py + 20, "EVRENSEL YUKLEME MOTORU", CW, 0, 1);
-        ds(px + 20, py + 50, "ISLEM YAPILIYOR...", CW, 0, 1);
-        rr(px + 30, py + 90, 300, 20, 5, CK);
-        rr(px + 30, py + 90, INSTALL_PROG * 3, 20, 5, CW);
-        INSTALL_PROG += 1;
-        if(INSTALL_PROG >= 100) INSTALLING = 0;
-    }
-
-    /* YAPAY ZEKA BILDIRIMI */
-    if(AI_MESSAGE_TIMER > 0){
-        i32 msg_w = 460, msg_h = 35;
-        i32 msg_x = ((i32)SW - msg_w) / 2;
-        rrg(msg_x, 40, msg_w, msg_h, 8, CHR_GRN);
-        rb(msg_x, 40, msg_w, msg_h, CW, 1);
-        dsc(msg_x, 50, msg_w, "YAPAY ZEKA: EKRAN EKSENI DUZELTILDI!", CK, 0, 1);
-        AI_MESSAGE_TIMER--;
-    }
 }
 
 /* Acilis: AI tarama ekrani */
 static void BOOT_SCREEN(void){
     fr(0, 0, (i32)SW, (i32)SH, CK);
-    if(AI_TIMER < 80){
-        dsc(0, (i32)SH / 2 - 40, (i32)SW, "WINDOS AI: DONANIM ANALIZ EDILIYOR...", CW, CK, 2);
-        rr((i32)SW / 2 - 150, (i32)SH / 2 + 20, 300, 10, 5, PAN_BD);
-        rr((i32)SW / 2 - 150, (i32)SH / 2 + 20, (AI_TIMER * 300) / 80, 10, 5, WIN_BLUE);
-    }
-    else if(AI_TIMER < 150){
-        dsc(0, (i32)SH / 2 - 40, (i32)SW, "ANOMALI TESPIT EDILDI: VIRTUALBOX AYNA BUG'I", CRD, CK, 2);
-        dsc(0, (i32)SH / 2, (i32)SW, "YAPAY ZEKA EKRANI OTOMATIK DUZELTIYOR...", CGN, CK, 1);
-    }
+    dsc(0, (i32)SH / 2 - 8, (i32)SW, "WINDOS", CW, CK, 2);
+    dsc(0, (i32)SH / 2 + 30, (i32)SW, "Yukleniyor...", CGY, CK, 1);
     AI_TIMER++;
-    if(AI_TIMER >= 150){ AI_BOOT_PHASE = 2; DIRTY = 1; }   /* masaustu bu karede cizilsin */
+    if(AI_TIMER >= 90){ AI_BOOT_PHASE = 2; DIRTY = 1; }   /* masaustu bu karede cizilsin */
 }
 
 /* ========================================================================= */
@@ -1296,8 +1162,6 @@ static void BOOT_SCREEN(void){
 /* ========================================================================= */
 /* Ana dongu her karede bir kez calisir; kareler arasinda islemci hlt ile uyur.
    Klavye ve fare hala yoklama (polling) ile okunur; yalnizca IRQ0 aciktir. */
-#define FRAME_HZ 50
-static volatile u32 TICKS = 0;
 
 struct __attribute__((packed)) IdtEntry { u16 off_lo; u16 sel; u8 zero; u8 type; u16 off_hi; };
 struct __attribute__((packed)) IdtPtr  { u16 limit; u32 base; };
@@ -1357,7 +1221,7 @@ static void frame_wait(void){
 /* Kare animasyon gerektiriyor mu (ses, oyun, saat, acilis, kurulum) */
 static int animating(void){
     return AI_BOOT_PHASE < 2 || MUS_PLAYING || (SN_OPEN && !SN_DEAD) || MIKU_OPEN
-        || TASKMGR_OPEN || AI_MESSAGE_TIMER > 0 || INSTALLING;
+        || TASKMGR_OPEN;
 }
 
 /* ========================================================================= */
@@ -1387,9 +1251,9 @@ void kernel_main(multiboot_info_t *mbi){
 
     u32 flags = *((u32*)((u8*)mbi + 0));
     if(flags & 1){ u32 mem_upper_kb = *((u32*)((u8*)mbi + 8)); SYS_RAM_MB = (mem_upper_kb / 1024) + 1; }
-    else SYS_RAM_MB = 2048;
+    else SYS_RAM_MB = 0;                    /* bilinmiyor */
 
-    mouse_init(); load_root_dir(); term_init();
+    mouse_init(); term_init();
     timer_init();
 
     while(1){
