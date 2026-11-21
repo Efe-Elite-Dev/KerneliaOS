@@ -209,7 +209,7 @@ static void dc(i32 x, i32 y, char ch, u32 fg, u32 bg, i32 sc){
         u8 bits = g[row];
         if(!bits) continue;
         for(i32 col = 0; col < 8; col++){
-            if(!(bits & (1u << col))) continue;
+            if(!(bits & (1<<col))) continue;   /* font8x8: bit0 = en sol piksel */
             if(sc == 1) pset(x + col, y + row, fg);
             else        fr(x + col * sc, y + row * sc, sc, sc, fg);
         }
