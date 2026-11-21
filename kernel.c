@@ -815,6 +815,300 @@ static void app_str(char *dst, const char *a, const char *b){
 
 static int str_eq(const char *a, const char *b){ while(*a && *a == *b){ a++; b++; } return *a == *b; }
 
+/* ========================================================================= */
+/* AG: RTL8139 SURUCUSU (yoklamali), ARP, IPv4, ICMP (ping)                  */
+/* ========================================================================= */
+/* Kart DMA ile RX_BUF'a yazar; her karede nic_poll() ile okunur.
+   GRUB altinda sayfalama kapali: fiziksel adres = sanal adres.            */
+
+static inline void outw(u16 p, u16 v){ __asm__ volatile("outw %0,%1"::"a"(v),"Nd"(p)); }
+
+static void pci_write32(u8 bus, u8 dev, u8 fn, u8 off, u32 v){
+    u32 addr = 0x80000000u | ((u32)bus << 16) | ((u32)(dev & 31) << 11)
+             | ((u32)(fn & 7) << 8) | (u32)(off & 0xFC);
+    outl(0xCF8, addr);
+    outl(0xCFC, v);
+}
+
+#define RX_RING  8192
+#define RX_BUFSZ (RX_RING + 16 + 1536)
+static u8  RX_BUF[RX_BUFSZ] __attribute__((aligned(16)));
+static u8  TX_BUF[4][1536] __attribute__((aligned(16)));
+static u16 NIC_IO = 0;
+static u8  NIC_MAC[6];
+static int NIC_UP = 0;
+static u32 RX_OFF = 0;
+static u8  TX_IDX = 0;
+static u16 IP_ID = 1;
+
+/* QEMU kullanici agi (10.0.2.0/24, ag gecidi 10.0.2.2) */
+#define NET_IP  0x0A00020Fu
+#define NET_GW  0x0A000202u
+#define PING_ID 0x5744
+
+#define ARP_N 8
+static u32 ARP_IP[ARP_N];
+static u8  ARP_MAC[ARP_N][6];
+static int ARP_CNT = 0;
+
+static u16 PING_SEQ = 0;
+static u32 PING_T1 = 0;
+static int PING_GOT = 0;
+
+/* Ag bayti: buyuk endian (ag) ve kart bayti: kucuk endian (RX basligi) */
+static void put16(u8 *p, u16 v){ p[0] = (u8)(v >> 8); p[1] = (u8)v; }
+static u16 get16(const u8 *p){ return (u16)((p[0] << 8) | p[1]); }
+static void put32(u8 *p, u32 v){ p[0] = (u8)(v >> 24); p[1] = (u8)(v >> 16); p[2] = (u8)(v >> 8); p[3] = (u8)v; }
+static u32 get32(const u8 *p){ return ((u32)p[0] << 24) | ((u32)p[1] << 16) | ((u32)p[2] << 8) | p[3]; }
+
+static u16 inet_csum(const u8 *d, int n){
+    u32 s = 0;
+    for(int i = 0; i + 1 < n; i += 2) s += (u32)((d[i] << 8) | d[i + 1]);
+    if(n & 1) s += (u32)(d[n - 1] << 8);
+    while(s >> 16) s = (s & 0xFFFF) + (s >> 16);
+    return (u16)~s;
+}
+
+static int nic_send(const u8 *pkt, u16 len){
+    if(!NIC_UP || len < 14 || len > 1536) return 0;
+    u8 i = TX_IDX;
+    TX_IDX = (u8)((TX_IDX + 1) & 3);
+    for(u16 k = 0; k < len; k++) TX_BUF[i][k] = pkt[k];
+    outl(NIC_IO + 0x20 + i * 4, (u32)(unsigned long)TX_BUF[i]);   /* TSAD */
+    outl(NIC_IO + 0x10 + i * 4, len);                             /* TSD: boyut, gonderimi baslatir */
+    for(u32 t = 0; t < 400000; t++){
+        if(inl(NIC_IO + 0x10 + i * 4) & 0x8000) return 1;         /* TOK */
+    }
+    return 0;
+}
+
+static int eth_send(const u8 *dst, u16 type, const u8 *body, int n){
+    u8 f[1536];
+    if(n < 0 || n > 1500) return 0;
+    for(int i = 0; i < 6; i++){ f[i] = dst[i]; f[6 + i] = NIC_MAC[i]; }
+    put16(f + 12, type);
+    for(int i = 0; i < n; i++) f[14 + i] = body[i];
+    int total = 14 + n;
+    while(total < 60) f[total++] = 0;                             /* minimum kare boyu */
+    return nic_send(f, (u16)total);
+}
+
+static void arp_put(u32 ip, const u8 *mac){
+    int i = 0;
+    while(i < ARP_CNT && ARP_IP[i] != ip) i++;
+    if(i == ARP_CNT){ if(ARP_CNT >= ARP_N) return; ARP_IP[i] = ip; ARP_CNT++; }
+    for(int k = 0; k < 6; k++) ARP_MAC[i][k] = mac[k];
+}
+
+static int arp_get(u32 ip, u8 *mac){
+    for(int i = 0; i < ARP_CNT; i++){
+        if(ARP_IP[i] == ip){ for(int k = 0; k < 6; k++) mac[k] = ARP_MAC[i][k]; return 1; }
+    }
+    return 0;
+}
+
+static void arp_send(u16 oper, const u8 *tha, u32 tpa, const u8 *dst){
+    u8 a[28];
+    put16(a, 1); put16(a + 2, 0x0800); a[4] = 6; a[5] = 4; put16(a + 6, oper);
+    for(int i = 0; i < 6; i++) a[8 + i] = NIC_MAC[i];
+    put32(a + 14, NET_IP);
+    for(int i = 0; i < 6; i++) a[18 + i] = tha[i];
+    put32(a + 24, tpa);
+    eth_send(dst, 0x0806, a, 28);
+}
+
+static void arp_request(u32 ip){
+    static const u8 bc[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+    static const u8 zero[6] = {0, 0, 0, 0, 0, 0};
+    arp_send(1, zero, ip, bc);
+}
+
+static void arp_rx(const u8 *a, int n){
+    if(n < 28) return;
+    u16 oper = get16(a + 6);
+    u32 spa = get32(a + 14), tpa = get32(a + 24);
+    arp_put(spa, a + 8);
+    if(oper == 1 && tpa == NET_IP) arp_send(2, a + 8, spa, a + 8);
+}
+
+static int ip_send(u32 dst, u8 proto, const u8 *body, int n){
+    u8 p[1500], mac[6];
+    if(n < 0 || n > 1480) return 0;
+    u32 nh = (((dst ^ NET_IP) & 0xFFFFFF00u) == 0) ? dst : NET_GW;
+    if(!arp_get(nh, mac)) return 0;
+    p[0] = 0x45; p[1] = 0;
+    put16(p + 2, (u16)(20 + n));
+    put16(p + 4, IP_ID++);
+    put16(p + 6, 0x4000);
+    p[8] = 64; p[9] = proto;
+    put16(p + 10, 0);
+    put32(p + 12, NET_IP);
+    put32(p + 16, dst);
+    put16(p + 10, inet_csum(p, 20));
+    for(int i = 0; i < n; i++) p[20 + i] = body[i];
+    return eth_send(mac, 0x0800, p, 20 + n);
+}
+
+static void icmp_rx(u32 src, const u8 *m, int n){
+    if(n < 8) return;
+    if(m[0] == 8){                                 /* yanki istegi: yanitla */
+        u8 r[1480];
+        if(n > 1480) return;
+        for(int i = 0; i < n; i++) r[i] = m[i];
+        r[0] = 0; r[2] = 0; r[3] = 0;
+        put16(r + 2, inet_csum(r, n));
+        ip_send(src, 1, r, n);
+    } else if(m[0] == 0 && get16(m + 4) == PING_ID){
+        PING_GOT = 1; PING_T1 = TICKS;
+    }
+}
+
+static void ip_rx(const u8 *p, int n){
+    if(n < 20 || (p[0] >> 4) != 4) return;
+    int ihl = (p[0] & 0x0F) * 4;
+    int tot = get16(p + 2);
+    if(ihl < 20 || tot < ihl || tot > n) return;
+    if(get32(p + 16) != NET_IP) return;
+    if(p[9] == 1) icmp_rx(get32(p + 12), p + ihl, tot - ihl);
+}
+
+static void net_rx(const u8 *f, int n){
+    if(n < 14) return;
+    u16 type = get16(f + 12);
+    if(type == 0x0806) arp_rx(f + 14, n - 14);
+    else if(type == 0x0800) ip_rx(f + 14, n - 14);
+}
+
+static void nic_rx_reset(void){
+    outb(NIC_IO + 0x37, 0x00);
+    outl(NIC_IO + 0x30, (u32)(unsigned long)RX_BUF);
+    outw(NIC_IO + 0x38, 0xFFF0);
+    outb(NIC_IO + 0x37, 0x0C);
+    RX_OFF = 0;
+}
+
+/* Bekleyen kareleri alip isler (her kare cagrilir) */
+static void nic_poll(void){
+    if(!NIC_UP) return;
+    for(int k = 0; k < 8 && !(inb(NIC_IO + 0x37) & 0x01); k++){   /* BUFE=0: kare var */
+        const u8 *h = RX_BUF + RX_OFF;
+        u16 status = (u16)(h[0] | (h[1] << 8));
+        u16 len    = (u16)(h[2] | (h[3] << 8));
+        if(!(status & 0x0001) || len < 4 || len > 1536){ nic_rx_reset(); return; }
+        net_rx(h + 4, len - 4);                                   /* CRC cikarilir */
+        RX_OFF = (RX_OFF + len + 4 + 3) & ~3u;
+        RX_OFF &= (RX_RING - 1);
+        outw(NIC_IO + 0x38, (u16)(RX_OFF - 16));                  /* CAPR */
+    }
+    outw(NIC_IO + 0x3E, 0xFFFF);                                  /* ISR temizle */
+}
+
+/* ARP cozumleme: en fazla ~1.5 sn bekler (komut sirasinda kullanilir) */
+static int arp_resolve(u32 ip){
+    u8 m[6];
+    for(int tries = 0; tries < 3; tries++){
+        if(arp_get(ip, m)) return 1;
+        arp_request(ip);
+        u32 until = TICKS + 25;
+        while(TICKS < until && !arp_get(ip, m)){ nic_poll(); __asm__ volatile("hlt"); }
+    }
+    return arp_get(ip, m);
+}
+
+static int parse_ip(const char *s, u32 *out){
+    u32 v = 0; int parts = 0;
+    while(1){
+        u32 n = 0; int d = 0;
+        while(*s >= '0' && *s <= '9'){ n = n * 10 + (u32)(*s - '0'); if(n > 255) return 0; s++; d++; }
+        if(!d) return 0;
+        v = (v << 8) | n; parts++;
+        if(*s == '.'){ s++; continue; }
+        break;
+    }
+    while(*s == ' ') s++;
+    if(*s || parts != 4) return 0;
+    *out = v;
+    return 1;
+}
+
+static void ip_str(u32 ip, char *o){
+    int k = 0;
+    for(int sh = 24; sh >= 0; sh -= 8){
+        u32 v = (ip >> sh) & 0xFF;
+        char t[3]; int n = 0;
+        do { t[n++] = (char)('0' + v % 10); v /= 10; } while(v);
+        while(n) o[k++] = t[--n];
+        if(sh) o[k++] = '.';
+    }
+    o[k] = 0;
+}
+
+static void dec_str(u32 v, char *o){
+    char t[12]; int n = 0;
+    do { t[n++] = (char)('0' + v % 10); v /= 10; } while(v);
+    int k = 0;
+    while(n) o[k++] = t[--n];
+    o[k] = 0;
+}
+
+/* ping [ip]: varsayilan ag gecidi; sonuc terminale yazilir */
+static void ping_cmd(const char *arg){
+    u32 ip = NET_GW;
+    if(!NIC_UP){ tl_add("AG KARTI YOK: QEMU -nic user,model=rtl8139 ile calistirin."); return; }
+    if(*arg && !parse_ip(arg, &ip)){ tl_add("GECERSIZ IP ADRESI (ornek: ping 10.0.2.2)"); return; }
+    int local = ((ip ^ NET_IP) & 0xFFFFFF00u) == 0;
+    char ipst[16];
+    ip_str(ip, ipst);
+    if(!arp_resolve(local ? ip : NET_GW)){ tl_add("ARP YANITI ALINAMADI."); return; }
+    u8 m[40];
+    PING_SEQ++;
+    m[0] = 8; m[1] = 0; m[2] = 0; m[3] = 0;
+    put16(m + 4, PING_ID); put16(m + 6, PING_SEQ);
+    for(int i = 8; i < 40; i++) m[i] = (u8)('a' + (i & 15));
+    put16(m + 2, inet_csum(m, 40));
+    PING_GOT = 0;
+    u32 t0 = TICKS;
+    if(!ip_send(ip, 1, m, 40)){ tl_add("PAKET GONDERILEMEDI."); return; }
+    while(!PING_GOT && TICKS - t0 < 75){ nic_poll(); __asm__ volatile("hlt"); }
+    char line[80], ms[12];
+    if(PING_GOT){
+        kcpy(line, ipst);
+        kcpy(line + klen(line), " YANIT, SURE: ");
+        if(PING_T1 == t0){                          /* kare cozunurlugu 20 ms: ayni karede geldi */
+            kcpy(line + klen(line), "20 MS'DEN AZ");
+        } else {
+            dec_str((PING_T1 - t0) * 1000u / FRAME_HZ, ms);
+            kcpy(line + klen(line), ms);
+            kcpy(line + klen(line), " MS");
+        }
+    } else {
+        kcpy(line, ipst);
+        kcpy(line + klen(line), " YANIT VERMEDI (ZAMAN ASIMI)");
+    }
+    tl_add(line);
+}
+
+static void nic_init(void){
+    pci_scan();
+    if(!NIC_FOUND) return;
+    u32 cmd = pci_read32(0, NIC.dev, NIC.fn, 0x04);
+    pci_write32(0, NIC.dev, NIC.fn, 0x04, (cmd & 0xFFFFu) | 0x5u);   /* I/O + bus master */
+    NIC_IO = (u16)(NIC.bar0 & 0xFFFCu);
+    if(!NIC_IO) return;
+    outb(NIC_IO + 0x52, 0x00);                                    /* CONFIG1: guc acik */
+    outb(NIC_IO + 0x37, 0x10);                                    /* RST */
+    for(u32 i = 0; i < 1000000 && (inb(NIC_IO + 0x37) & 0x10); i++);
+    for(int i = 0; i < 6; i++) NIC_MAC[i] = inb(NIC_IO + i);
+    outl(NIC_IO + 0x30, (u32)(unsigned long)RX_BUF);              /* RBSTART */
+    outw(NIC_IO + 0x38, 0xFFF0);                                  /* CAPR */
+    outw(NIC_IO + 0x3C, 0x0000);                                  /* IMR: kesme yok, yoklama */
+    outw(NIC_IO + 0x3E, 0xFFFF);
+    outl(NIC_IO + 0x44, 0x0000E78Fu);                             /* RCR: yayin+coklu+hepsi+WRAP */
+    outl(NIC_IO + 0x40, 0x03000700u);                             /* TCR */
+    outb(NIC_IO + 0x37, 0x0C);                                    /* TE | RE */
+    NIC_UP = 1;
+}
+
 static void term_exec(void){
     char line[TL_W];
     int n = TIN_LEN;
@@ -835,7 +1129,7 @@ static void term_exec(void){
     const char *arg = &line[i];
     if(c == 0) return;
 
-    if(str_eq(cmd, "help"))       tl_add("KOMUTLAR: help ver mem echo clear time muzik miku not snake web exit lspci");
+    if(str_eq(cmd, "help")){ tl_add("KOMUTLAR: help ver mem echo clear time muzik miku not snake web exit lspci"); tl_add("AG: ping [ip]  (ornek: ping 10.0.2.2)"); }
     else if(str_eq(cmd, "ver"))   tl_add("WindOS 18.1 (x86, 32-bit)");
     else if(str_eq(cmd, "mem")){
         char b[TL_W]; kcpy(b, "FIZIKSEL RAM (MULTIBOOT): ");
@@ -853,6 +1147,7 @@ static void term_exec(void){
     else if(str_eq(cmd, "web"))   { BR_OPEN = 1; FOCUS = 4; }
     else if(str_eq(cmd, "exit"))  TERM_OPEN = 0;
     else if(str_eq(cmd, "lspci")) pci_list_to_term();
+    else if(str_eq(cmd, "ping"))  ping_cmd(arg);
     else {
         char b[TL_W];
         app_str(b, "BILINMEYEN KOMUT: ", cmd);
@@ -1297,12 +1592,14 @@ void kernel_main(multiboot_info_t *mbi){
     else SYS_RAM_MB = 0;                    /* bilinmiyor */
 
     mouse_init(); term_init();
+    nic_init();
     timer_init();
 
     while(1){
         frame_wait();
         ps2_pump();
         mouse_poll();
+        nic_poll();
         for(int ki = 0; ki < 8; ki++) on_key(kbd_poll());
         apps_tick();
         int anim = animating();
