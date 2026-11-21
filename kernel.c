@@ -672,6 +672,107 @@ static void SNAKE_APP(void){
     }
 }
 
+static void tl_add(const char *s);
+
+/* ---- PCI: yapilandirma alani (port 0xCF8 adres, 0xCFC veri) ---- */
+static inline void outl(u16 p, u32 v){ __asm__ volatile("outl %0,%1"::"a"(v),"Nd"(p)); }
+static inline u32  inl(u16 p){ u32 v; __asm__ volatile("inl %1,%0":"=a"(v):"Nd"(p)); return v; }
+
+static u32 pci_read32(u8 bus, u8 dev, u8 fn, u8 off){
+    u32 addr = 0x80000000u | ((u32)bus << 16) | ((u32)(dev & 31) << 11)
+             | ((u32)(fn & 7) << 8) | (u32)(off & 0xFC);
+    outl(0xCF8, addr);
+    return inl(0xCFC);
+}
+
+#define PCI_MAX 32
+typedef struct { u16 vendor, device; u8 bus, dev, fn, cls, sub; u32 bar0; } PciDev;
+static PciDev PCI_LIST[PCI_MAX];
+static int PCI_N = 0;
+
+/* Ag karti (RTL8139) bulunursa burada tutulur; bir sonraki adim kullanir */
+#define RTL_VENDOR 0x10EC
+#define RTL_DEVICE 0x8139
+static int NIC_FOUND = 0;
+static PciDev NIC;
+
+/* 0..7 fonksiyon basina: satici 0xFFFF ise cihaz yok */
+static void pci_scan(void){
+    PCI_N = 0; NIC_FOUND = 0;
+    for(u8 d = 0; d < 32; d++){
+        u32 id = pci_read32(0, d, 0, 0x00);
+        if((id & 0xFFFF) == 0xFFFF) continue;
+        /* Cok fonksiyonlu cihaz mi? (header tipi bit 7) */
+        u32 hdr = pci_read32(0, d, 0, 0x0C);
+        int multi = (hdr >> 23) & 1;
+        int maxf = multi ? 8 : 1;
+        for(u8 f = 0; f < maxf; f++){
+            u32 fid = pci_read32(0, d, f, 0x00);
+            if((fid & 0xFFFF) == 0xFFFF) continue;
+            if(PCI_N >= PCI_MAX) return;
+            u32 cls = pci_read32(0, d, f, 0x08);
+            PciDev *p = &PCI_LIST[PCI_N++];
+            p->vendor = (u16)(fid & 0xFFFF);
+            p->device = (u16)(fid >> 16);
+            p->bus = 0; p->dev = d; p->fn = f;
+            p->cls = (u8)(cls >> 24);
+            p->sub = (u8)(cls >> 16);
+            p->bar0 = pci_read32(0, d, f, 0x10);
+            if(p->vendor == RTL_VENDOR && p->device == RTL_DEVICE && !NIC_FOUND){
+                NIC = *p; NIC_FOUND = 1;
+            }
+        }
+    }
+}
+
+/* Sayiyi onaltilik metin olarak yazar: digits basamak, 0x oneki yok */
+static void hex_str(u32 v, int digits, char *out){
+    const char *h = "0123456789ABCDEF";
+    for(int i = digits - 1; i >= 0; i--){ out[i] = h[v & 0xF]; v >>= 4; }
+    out[digits] = 0;
+}
+
+/* lspci: bulunan PCI cihazlarini terminale satir satir yazar */
+static void pci_list_to_term(void){
+    pci_scan();
+    char line[80];
+    if(PCI_N == 0){ tl_add("PCI cihazi bulunamadi."); return; }
+    for(int i = 0; i < PCI_N; i++){
+        PciDev *p = &PCI_LIST[i];
+        char vid[5], did[5], cl[3], sb[3];
+        hex_str(p->vendor, 4, vid); hex_str(p->device, 4, did);
+        hex_str(p->cls, 2, cl); hex_str(p->sub, 2, sb);
+        char bus_dev[12];
+        bus_dev[0]='0'; bus_dev[1]='0'; bus_dev[2]=':';
+        hex_str(p->dev, 2, bus_dev + 3); bus_dev[5]='.'; bus_dev[6]='0'+p->fn; bus_dev[7]=0;
+        /* 00:03.0 8086:100E  sinif 02:00 */
+        int k = 0;
+        for(int j = 0; bus_dev[j] && k < 79; j++) line[k++] = bus_dev[j];
+        line[k++] = ' ';
+        for(int j = 0; j < 4 && k < 79; j++) line[k++] = vid[j];
+        line[k++] = ':';
+        for(int j = 0; j < 4 && k < 79; j++) line[k++] = did[j];
+        const char *mid = "  sinif ";
+        for(int j = 0; mid[j] && k < 79; j++) line[k++] = mid[j];
+        for(int j = 0; j < 2 && k < 79; j++) line[k++] = cl[j];
+        line[k++] = ':';
+        for(int j = 0; j < 2 && k < 79; j++) line[k++] = sb[j];
+        line[k] = 0;
+        tl_add(line);
+    }
+    if(NIC_FOUND){
+        char b[80]; int k = 0;
+        const char *m = "RTL8139 AG KARTI BULUNDU, I/O TABANI: 0x";
+        for(int j = 0; m[j] && k < 70; j++) b[k++] = m[j];
+        char io[5]; hex_str(NIC.bar0 & 0xFFFC, 4, io);
+        for(int j = 0; j < 4; j++) b[k++] = io[j];
+        b[k] = 0;
+        tl_add(b);
+    } else {
+        tl_add("RTL8139 bulunamadi (QEMU -nic user,model=rtl8139 gerekli).");
+    }
+}
+
 /* ---- TERMINAL ---- */
 #define TL_MAX 24
 #define TL_W   80
@@ -725,7 +826,7 @@ static void term_exec(void){
     const char *arg = &line[i];
     if(c==0) return;
 
-    if(str_eq(cmd, "help"))        tl_add("KOMUTLAR: help ver mem echo clear time muzik miku not snake web exit");
+    if(str_eq(cmd, "help"))        tl_add("KOMUTLAR: help ver mem echo clear time muzik miku not snake web exit lspci");
     else if(str_eq(cmd, "ver"))    tl_add("WindOS 18.0 OMEGA-CORE (x86, 32-bit)");
     else if(str_eq(cmd, "mem")){
         char b[TL_W]; kcpy(b, "FIZIKSEL RAM (MULTIBOOT): ");
@@ -741,6 +842,7 @@ static void term_exec(void){
     else if(str_eq(cmd, "snake"))  snake_open();
     else if(str_eq(cmd, "web"))    { BR_OPEN = 1; FOCUS = 4; }
     else if(str_eq(cmd, "exit"))   TERM_OPEN = 0;
+    else if(str_eq(cmd, "lspci"))  pci_list_to_term();
     else {
         char b[TL_W];
         app_str(b, "BILINMEYEN KOMUT: ", cmd);
