@@ -82,7 +82,12 @@ jobs:
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        gh release create "$GITHUB_REF_NAME" \
-          --title "WindOS $GITHUB_REF_NAME" \
-          --notes "Otomatik surum: ISO ve run.bat. Windows'ta ISO'yu run.bat dosyasinin uzerine surukleyin (QEMU gerekir)." \
-          release/WindOS-Quantum.iso run.bat
+        # Surum arayuzden zaten olusturulmus olabilir: varsa dosyalari ekle, yoksa olustur
+        if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+          gh release upload "$GITHUB_REF_NAME" release/WindOS-Quantum.iso run.bat --clobber
+        else
+          gh release create "$GITHUB_REF_NAME" \
+            --title "WindOS $GITHUB_REF_NAME" \
+            --notes "Otomatik surum: ISO ve run.bat. Windows'ta ISO'yu run.bat dosyasinin uzerine surukleyin (QEMU gerekir)." \
+            release/WindOS-Quantum.iso run.bat
+        fi
