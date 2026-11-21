@@ -39,6 +39,7 @@ static int TASKMGR_OPEN = 0;
 static int TERM_OPEN = 0;
 /* Klavye odagi: 0 yok, 1 terminal, 2 not defteri, 3 yilan */
 static int FOCUS = 0;
+static int BR_OPEN = 0;
 static int FO = 0, CHROME_OPEN = 0, DISP_OPEN = 0, SYS_OPEN = 0, AI_OPEN = 0;
 static i32 FX = 100, FY = 80, FD = 0, FDX = 0, FDY = 0;
 static i32 CX = 150, CY = 100, CD = 0, CDX = 0, CDY = 0; 
@@ -724,7 +725,7 @@ static void term_exec(void){
     const char *arg = &line[i];
     if(c==0) return;
 
-    if(str_eq(cmd, "help"))        tl_add("KOMUTLAR: help ver mem echo clear time muzik miku not snake");
+    if(str_eq(cmd, "help"))        tl_add("KOMUTLAR: help ver mem echo clear time muzik miku not snake web exit");
     else if(str_eq(cmd, "ver"))    tl_add("WindOS 18.0 OMEGA-CORE (x86, 32-bit)");
     else if(str_eq(cmd, "mem")){
         char b[TL_W]; kcpy(b, "FIZIKSEL RAM (MULTIBOOT): ");
@@ -738,6 +739,8 @@ static void term_exec(void){
     else if(str_eq(cmd, "miku"))   MIKU_OPEN = 1;
     else if(str_eq(cmd, "not"))    { NOTE_OPEN = 1; FOCUS = 2; }
     else if(str_eq(cmd, "snake"))  snake_open();
+    else if(str_eq(cmd, "web"))    { BR_OPEN = 1; FOCUS = 4; }
+    else if(str_eq(cmd, "exit"))   TERM_OPEN = 0;
     else {
         char b[TL_W];
         app_str(b, "BILINMEYEN KOMUT: ", cmd);
@@ -778,14 +781,93 @@ static void TERMINAL_APP(void) {
     ds(cx+16, cy+ch-26, pr, CGN, 0, 1);
 }
 
+/* ---- TARAYICI: ag surucusu yok, sadece yerlesik sayfalar ---- */
+static char BR_URL[64]; static int BR_ULEN=0;
+static char BR_TARGET[64];
+static int BR_PAGE=0; /* 0 ana sayfa, 1 ag yok, 2 hakkinda */
+
+static void br_go(void){
+    BR_URL[BR_ULEN] = 0;
+    if(BR_ULEN==0 || str_eq(BR_URL,"home")) BR_PAGE = 0;
+    else if(str_eq(BR_URL,"about")) BR_PAGE = 2;
+    else {
+        BR_PAGE = 1;
+        kcpy(BR_TARGET, BR_URL);
+    }
+}
+
+static void br_key(u8 c){
+    if(c==8){ if(BR_ULEN>0) BR_ULEN--; return; }
+    if(c=='\n' || c=='\r'){ br_go(); return; }
+    if(c>=32 && c<127 && BR_ULEN < 60) BR_URL[BR_ULEN++] = (char)c;
+}
+
+static void BROWSER_APP(void){
+    if(!BR_OPEN) return;
+    const i32 wx=200, wy=140, ww=560, wh=380;
+    DRAW_WINDOW(wx, wy, ww, wh, "TARAYICI", PAN_BG);
+    if(CLK(wx+14, wy+11, 12, 12)){ BR_OPEN=0; return; }
+    if(MLB && !PMLB && HOV(wx, wy, ww, wh)) FOCUS = 4;
+
+    /* adres cubugu */
+    rr(wx+20, wy+50, ww-120, 28, 8, SAFE_BLK);
+    char shown[64]; int k=0;
+    for(int i=0;i<BR_ULEN && k<60;i++) shown[k++] = BR_URL[i];
+    if(FOCUS==4 && k<62) shown[k++] = '_';
+    shown[k] = 0;
+    ds(wx+30, wy+60, BR_ULEN==0 && FOCUS!=4 ? "ADRES (ornek: home, about)" : shown, BR_ULEN==0 && FOCUS!=4 ? CGY : CTXT, 0, 1);
+    rr(wx+ww-90, wy+50, 70, 28, 8, WIN_BLUE);
+    ds(wx+ww-76, wy+60, "GIT", CW, 0, 1);
+    if(CLK(wx+ww-90, wy+50, 70, 28)) br_go();
+
+    /* icerik */
+    rr(wx+20, wy+92, ww-40, wh-112, 10, PAN_BG);
+    if(BR_PAGE==0){
+        ds(wx+40, wy+115, "WINDOS TARAYICI", CW, 0, 1);
+        ds(wx+40, wy+135, "Hizli erisim (tiklayin):", CGY, 0, 1);
+        const char *links[3] = {"youtube.com", "wikipedia.org", "about"};
+        for(int i=0;i<3;i++){
+            i32 ly = wy+160 + i*26;
+            rr(wx+40, ly, 260, 20, 4, SAFE_BLK);
+            ds(wx+50, ly+6, links[i], CTXT, 0, 1);
+            if(CLK(wx+40, ly, 260, 20)){ BR_ULEN=0; for(int j=0; links[i][j] && BR_ULEN<60; j++) BR_URL[BR_ULEN++]=links[i][j]; br_go(); }
+        }
+        ds(wx+40, wy+260, "Not: Ag surucusu olmadigi icin internet", CGY, 0, 1);
+        ds(wx+40, wy+274, "siteleri yuklenemez.", CGY, 0, 1);
+    }
+    else if(BR_PAGE==1){
+        ds(wx+40, wy+115, "BAGLANILAMIYOR", CRD, 0, 1);
+        ds(wx+40, wy+135, "Ag surucusu yok (NIC, TCP/IP, DNS).", CTXT, 0, 1);
+        ds(wx+40, wy+155, "Adres:", CGY, 0, 1);
+        ds(wx+100, wy+155, BR_TARGET, CW, 0, 1);
+        ds(wx+40, wy+185, "Ana sayfa icin adres kutusuna 'home' yazin.", CGY, 0, 1);
+    }
+    else {
+        ds(wx+40, wy+115, "HAKKINDA", CW, 0, 1);
+        ds(wx+40, wy+135, "WindOS 18.0 OMEGA-CORE", CTXT, 0, 1);
+        ds(wx+40, wy+155, "Tarayici yerlesik sayfalari gosterir.", CGY, 0, 1);
+        ds(wx+40, wy+171, "Internet icin ag surucusu gerekir.", CGY, 0, 1);
+    }
+}
+
+static void close_focused(void){
+    if(FOCUS==1) TERM_OPEN = 0;
+    else if(FOCUS==2) NOTE_OPEN = 0;
+    else if(FOCUS==3) SN_OPEN = 0;
+    else if(FOCUS==4) BR_OPEN = 0;
+    FOCUS = 0;
+}
+
 /* ---- Tum uygulamalar icin kare basina adim ve tus dagitimi ---- */
 static void apps_tick(void){ mus_tick(); snake_tick(); }
 
 static void on_key(u8 c){
     if(!c) return;
+    if(c==27){ close_focused(); return; }
     if(FOCUS==1 && TERM_OPEN){ term_key(c); return; }
     if(FOCUS==2 && NOTE_OPEN){ note_key(c); return; }
     if(FOCUS==3 && SN_OPEN){ sn_key(c); return; }
+    if(FOCUS==4 && BR_OPEN){ br_key(c); return; }
 }
 
 static void DESKTOP(void){
@@ -797,7 +879,7 @@ static void DESKTOP(void){
     ds(SW-180, 8, "22 SUBAT | 10:26 PM", CW, 0, 1);
     
     /* WINDOWS 11 DOCK */
-    i32 dock_w = 660; i32 dock_x = (SW - dock_w) / 2; i32 dock_y = SH - 80;
+    i32 dock_w = 725; i32 dock_x = (SW - dock_w) / 2; i32 dock_y = SH - 80;
     DRAW_GLASS = 1; rr(dock_x, dock_y, dock_w, 65, 15, DOCK_BG); DRAW_GLASS = 0; rb(dock_x, dock_y, dock_w, 65, PAN_BD, 1);
     
     /* Başlat Butonu */
@@ -829,8 +911,10 @@ static void DESKTOP(void){
     if(CLK(dock_x + 535, dock_y + 10, 45, 45)){ NOTE_OPEN = 1; FOCUS = 2; }
     rr(dock_x + 600, dock_y + 10, 45, 45, 10, CGN);
     if(CLK(dock_x + 600, dock_y + 10, 45, 45)) snake_open();
+    rr(dock_x + 665, dock_y + 10, 45, 45, 10, 0xFF4285F4u);
+    if(CLK(dock_x + 665, dock_y + 10, 45, 45)){ BR_OPEN = 1; FOCUS = 4; }
 
-    FILEMGR(); TERMINAL_APP(); TASKMGR_APP(); SYSTEM_APP(); DISPLAY_APP(); WINDAI_ASSISTANT(); MUSIC_APP(); MIKU_APP(); NOTES_APP(); SNAKE_APP(); START_MENU(); SPOTLIGHT_SEARCH();
+    FILEMGR(); TERMINAL_APP(); TASKMGR_APP(); SYSTEM_APP(); DISPLAY_APP(); WINDAI_ASSISTANT(); MUSIC_APP(); MIKU_APP(); NOTES_APP(); SNAKE_APP(); BROWSER_APP(); START_MENU(); SPOTLIGHT_SEARCH();
 
     if(INSTALLING) {
         i32 px = SW/2 - 180, py = SH/2 - 70; 
