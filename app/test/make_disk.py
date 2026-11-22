@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""QEMU icin WindOS disk imaji: FAT16, kokte HELLO.TXT, SUB/..., HELLO.WIN.
+"""QEMU icin WindOS disk imaji: FAT16, kokte HELLO.TXT, SUB/..., HELLO.WIN, PE_HELLO.EXE.
 
 Kullanim: python3 app/test/make_disk.py <cikti_dosyasi.img>
 (HELLO.WIN once app/samples/build_samples.py ile uretilir; betik bunu kendi
@@ -27,7 +27,16 @@ def main():
                        check=True, stdout=subprocess.DEVNULL)
         with open(os.path.join(tmp, "HELLO.WIN"), "rb") as f:
             wind = f.read()
-    data = make_fat_images.build("fat16", {"HELLO.WIN": wind})
+    files = {"HELLO.WIN": wind}
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            subprocess.run([sys.executable, os.path.join(ROOT, "app", "samples", "build_pe.py"), tmp],
+                           check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            with open(os.path.join(tmp, "PE_HELLO.EXE"), "rb") as f:
+                files["PE_HELLO.EXE"] = f.read()
+    except (OSError, subprocess.CalledProcessError):
+        print("uyari: i686-w64-mingw32-gcc yok; PE_HELLO.EXE disk imajina eklenmedi")
+    data = make_fat_images.build("fat16", files)
     with open(out, "wb") as f:
         f.write(data)
     print("yazildi:", out)

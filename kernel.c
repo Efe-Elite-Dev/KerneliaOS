@@ -15,6 +15,7 @@
 #include "app/ata.c"
 #include "app/fat.c"
 #include "app/wind.c"
+#include "app/pe.c"
 
 typedef unsigned int   u32;
 typedef unsigned short u16;
@@ -1470,6 +1471,125 @@ static void wind_run(const char *path){
     tl_add("WIND: PROGRAM BITTI");
 }
 
+/* ---- .exe calistirici (PE32 i386) ----
+   Programa yalnizca kernel32'nin kucuk bir alt kumesi saglanir. Program ring 0'da
+   calisir (guvenilen kod); ExitProcess yigini kernel'e geri alip cagriyi bitirir. */
+#define EXE_FILE_MAX (256u * 1024u)
+#define EXE_IMG_MAX  (512u * 1024u)
+static unsigned char EXE_FILE[EXE_FILE_MAX];
+static unsigned char EXE_MEM[EXE_IMG_MAX];
+static unsigned EXE_ESP = 0, EXE_RET = 0;    /* kernel yigini ve donus adresi */
+static unsigned EXE_CODE = 0;
+static char EXE_LINE[TL_W];
+static int EXE_LN = 0;
+
+static void exe_flush(void){
+    EXE_LINE[EXE_LN] = 0;
+    tl_add(EXE_LINE);
+    EXE_LN = 0;
+}
+/* WriteFile ciktisi: satirlara bolunup terminale eklenir */
+static void exe_putc(char c){
+    if(c == '\r') return;
+    if(c == '\n'){ exe_flush(); return; }
+    if(EXE_LN >= TL_W - 2) exe_flush();
+    EXE_LINE[EXE_LN++] = c;
+}
+
+/* kernel32 alt kumesi (stdcall: cagiran degil cagrilan temizler) */
+static void *__attribute__((stdcall)) exe_GetStdHandle(unsigned id){
+    return (void *)(unsigned)(0x100u + (id & 0xFFu));     /* sahte tutamaclar */
+}
+static int __attribute__((stdcall)) exe_WriteFile(void *h, const unsigned char *buf, unsigned n,
+                                                  unsigned *written, void *ov){
+    (void)h; (void)ov;
+    for(unsigned i = 0; i < n; i++) exe_putc((char)buf[i]);
+    if(written) *written = n;
+    return 1;
+}
+static unsigned __attribute__((stdcall)) exe_GetTickCount(void){ return (unsigned)TICKS; }
+static void __attribute__((stdcall, noreturn)) exe_ExitProcess(unsigned code){
+    EXE_CODE = code;
+    __asm__ volatile("movl %0, %%esp\n\tjmp *%1" : : "m"(EXE_ESP), "m"(EXE_RET));
+    for(;;) { }
+}
+
+static int exe_name_is(const char *a, const char *b){
+    for(;;){
+        char x = *a++, y = *b++;
+        if(x >= 'A' && x <= 'Z') x = (char)(x + 32);
+        if(y >= 'A' && y <= 'Z') y = (char)(y + 32);
+        if(x != y) return 0;
+        if(!x) return 1;
+    }
+}
+
+static unsigned exe_resolve(void *ctx, const char *dll, const char *name, unsigned ord){
+    (void)ctx;
+    if(!dll || !name || ord) return 0;                 /* yalnizca adla import */
+    if(!exe_name_is(dll, "kernel32.dll")) return 0;
+    if(exe_name_is(name, "ExitProcess"))    return (unsigned)(void *)exe_ExitProcess;
+    if(exe_name_is(name, "GetStdHandle"))   return (unsigned)(void *)exe_GetStdHandle;
+    if(exe_name_is(name, "WriteFile"))      return (unsigned)(void *)exe_WriteFile;
+    if(exe_name_is(name, "GetTickCount"))   return (unsigned)(void *)exe_GetTickCount;
+    return 0;
+}
+
+/* Giris noktasini cagirir. Donus adresi ve yigin kaydedilir; ExitProcess bunlara doner.
+   Callee-saved yazmaclar (ebx, esi, edi, ebp) cagri oncesi ve sonrasi ayni kalir. */
+static void exe_call(unsigned entry){
+    __asm__ volatile(
+        "pushl %%ebx\n\t"
+        "pushl %%esi\n\t"
+        "pushl %%edi\n\t"
+        "pushl %%ebp\n\t"
+        "movl $1f, %0\n\t"
+        "movl %%esp, %1\n\t"
+        "call *%2\n"
+        "1:\n\t"
+        "popl %%ebp\n\t"
+        "popl %%edi\n\t"
+        "popl %%esi\n\t"
+        "popl %%ebx\n\t"
+        : "=m"(EXE_RET), "=m"(EXE_ESP)
+        : "r"(entry)
+        : "eax", "ecx", "edx", "memory", "cc");
+}
+
+/* "exe DOSYA": PE32 programini yukler, kernel32 importlarini baglar ve calistirir */
+static void exe_run(const char *path){
+    if(!WVOL_OK){
+        if(fat_mount(&WVOL, ata_read, 0) != 0){ tl_add("DISK YOK VEYA FAT BICIMI TANINMADI"); return; }
+        WVOL_OK = 1;
+    }
+    fat_file f;
+    if(fat_open(&WVOL, path, &f) != 0 || f.is_dir){ tl_add("DOSYA BULUNAMADI"); return; }
+    if(f.size > EXE_FILE_MAX){ tl_add("EXE: DOSYA COK BUYUK"); return; }
+    unsigned n = 0;
+    while(n < f.size){
+        int r = fat_read(&WVOL, &f, EXE_FILE + n, f.size - n);
+        if(r <= 0) break;
+        n += (unsigned)r;
+    }
+    if(n != f.size){ tl_add("EXE: DOSYA OKUNAMADI"); return; }
+
+    pe_info info;
+    unsigned entry = 0;
+    int e = pe_load(EXE_FILE, n, EXE_MEM, EXE_IMG_MAX, (unsigned)(void *)EXE_MEM,
+                    exe_resolve, 0, &info, &entry);
+    if(e != PE_OK){ tl_add(pe_err_text(e)); return; }
+
+    EXE_LN = 0;
+    EXE_CODE = 0;
+    exe_call(entry);
+    if(EXE_LN > 0) exe_flush();
+    char msg[TL_W], part[TL_W], num[16];
+    itoa((int)EXE_CODE, num);
+    app_str(part, "EXE: PROGRAM BITTI (KOD ", num);
+    app_str(msg, part, ")");
+    tl_add(msg);
+}
+
 static void term_exec(void){
     char line[TL_W];
     int n = TIN_LEN;
@@ -1490,7 +1610,7 @@ static void term_exec(void){
     const char *arg = &line[i];
     if(c == 0) return;
 
-    if(str_eq(cmd, "help")){ tl_add("KOMUTLAR: help ver mem echo clear time muzik miku not snake web exit lspci"); tl_add("AG: ping [ip]  (ornek: ping 10.0.2.2)"); tl_add("SES: ses [hz]  (ornek: ses 440)"); tl_add("WIND: wind DOSYA  (ornek: wind HELLO.WIN)"); tl_add("HTTP: http ip[:port][/yol]"); }
+    if(str_eq(cmd, "help")){ tl_add("KOMUTLAR: help ver mem echo clear time muzik miku not snake web exit lspci"); tl_add("AG: ping [ip]  (ornek: ping 10.0.2.2)"); tl_add("SES: ses [hz]  (ornek: ses 440)"); tl_add("WIND: wind DOSYA  (ornek: wind HELLO.WIN)"); tl_add("EXE: exe DOSYA  (ornek: exe PE_HELLO.EXE)"); tl_add("HTTP: http ip[:port][/yol]"); }
     else if(str_eq(cmd, "ver"))   tl_add("WindOS 18.1 (x86, 32-bit)");
     else if(str_eq(cmd, "mem")){
         char b[TL_W]; kcpy(b, "FIZIKSEL RAM (MULTIBOOT): ");
@@ -1512,6 +1632,7 @@ static void term_exec(void){
     else if(str_eq(cmd, "ses"))   ses_cmd(arg);
     else if(str_eq(cmd, "http"))  http_cmd(arg);
     else if(str_eq(cmd, "wind"))  wind_run(arg);
+    else if(str_eq(cmd, "exe"))   exe_run(arg);
     else {
         char b[TL_W];
         app_str(b, "BILINMEYEN KOMUT: ", cmd);
