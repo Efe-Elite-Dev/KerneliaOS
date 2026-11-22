@@ -1,4 +1,4 @@
-/* WindOS FAT12/FAT16 surucu: okuma ve LFN'li dosya olusturma. Bkz. fat.h */
+/* WindOS FAT12/FAT16 surucu: okuma, LFN'li dosya/klasor olusturma, listeleme. Bkz. fat.h */
 #include "fat.h"
 
 #define FAT_EOC 0xFFFFFFFFu
@@ -199,6 +199,20 @@ static int lfn_name_eq(const unsigned char *nm, const char *name, int len){
     return 1;
 }
 
+/* Bir LFN girisini zincire ekler. have/ok/sum: zincir durumu (dizin taramasinda korunur) */
+static void lfn_step(unsigned char *lfn, int *have, int *ok, unsigned char *sum, const unsigned char *d){
+    unsigned ord = d[0] & 0x1F;
+    if(d[0] & 0x40){                         /* zincirin son (en ust) parcasi */
+        for(unsigned i = 0; i < FAT_NAME_BUF; i++) lfn[i] = 0;
+        *sum = d[13];
+        *have = 1;
+        *ok = (ord >= 1 && ord <= 20);
+    } else if(!*have || d[13] != *sum || ord < 1 || ord > 20){
+        *ok = 0;
+    }
+    if(*ok) lfn_put(lfn, d, ord);
+}
+
 /* first kumesinden baslayan dizinde (first==0: kok dizin) adi arar.
    name: kullanicinin yazdigi bilesen (8.3 ya da uzun ad) */
 static int dir_find(fat_vol *v, unsigned first, const char *name, int len, fat_file *out){
@@ -222,22 +236,10 @@ static int dir_find(fat_vol *v, unsigned first, const char *name, int len, fat_f
         if(v->rd(v->ctx, lba, 1, sec) != 0) return -1;
         for(unsigned e = 0; e < 512 / 32; e++){
             const unsigned char *d = sec + e * 32;
-            unsigned ord = d[0] & 0x1F;
             int hit = 0;
-            if(d[0] == 0x00) return -1;                 /* dizin sonu */
+            if(d[0] == 0x00) return -1;                  /* dizin sonu */
             if(d[0] == 0xE5){ lfn_have = 0; continue; }  /* silinmis giris */
-            if(d[11] == FAT_ATTR_LFN){                   /* uzun ad girisi */
-                if(d[0] & 0x40){                         /* zincirin son (en ust) parcasi */
-                    for(unsigned i = 0; i < FAT_NAME_BUF; i++) lfn[i] = 0;
-                    lfn_sum = d[13];
-                    lfn_have = 1;
-                    lfn_ok = (ord >= 1 && ord <= 20);
-                } else if(!lfn_have || d[13] != lfn_sum || ord < 1 || ord > 20){
-                    lfn_ok = 0;
-                }
-                if(lfn_ok) lfn_put(lfn, d, ord);
-                continue;
-            }
+            if(d[11] == FAT_ATTR_LFN){ lfn_step(lfn, &lfn_have, &lfn_ok, &lfn_sum, d); continue; }
             /* kisa (8.3) giris: once uzun ad zincirine, sonra 8.3 adina bak */
             if(lfn_have && lfn_ok && lfn_sum == lfn_checksum(d)) hit = lfn_name_eq(lfn, name, len);
             if(!hit && have83 && !(d[11] & 0x08)) hit = name_eq(d, s83);
@@ -310,36 +312,7 @@ int fat_read(fat_vol *v, fat_file *f, unsigned char *buf, unsigned n){
     return (int)done;
 }
 
-/* ---- Yazma ---- */
-
-/* "name.ext" -> 8.3 adi (kucuk harf ve kisa ad icin). Donus 1: dogrudan 8.3 kullanilabilir */
-static int short_ok(const char *s, int len, unsigned char out[11]){
-    int dots = 0;
-    if(to83(s, len, out) != 0) return 0;
-    for(int i = 0; i < len; i++){
-        char c = s[i];
-        if(c == '.'){ dots++; continue; }
-        if(!((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '~')) return 0;
-    }
-    return dots <= 1;
-}
-
-static int name_bad(const char *s, int len){
-    for(int i = 0; i < len; i++){
-        unsigned char c = (unsigned char)s[i];
-        if(c < 0x20 || c > 0x7E) return 1;
-        if(c == '"' || c == '*' || c == '/' || c == ':' || c == '<' || c == '>' ||
-           c == '?' || c == '\\' || c == '|') return 1;
-    }
-    return 0;
-}
-
-static int is_alnum_ascii(char c){
-    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
-}
-static unsigned char up_ascii(char c){
-    return (unsigned char)((c >= 'a' && c <= 'z') ? c - 32 : c);
-}
+/* ---- Dizin girisi yardimcilari ---- */
 
 /* Dizin girisi idx -> sektor ve bayt konumu. Donus 0 tamam, 1 zincir sonu, -1 hata */
 static int dir_pos(fat_vol *v, unsigned first, unsigned idx, unsigned *lba, unsigned *off){
@@ -442,22 +415,58 @@ static int dir_has_short(fat_vol *v, unsigned first, const unsigned char *s11){
     }
 }
 
-/* Uzun ad icin benzersiz 8.3 takma ad: ILK6~N.EXT (N = 1..9) */
+/* "name.ext" -> 8.3 adi (kucuk harf ve kisa ad icin). Donus 1: dogrudan 8.3 kullanilabilir */
+static int short_ok(const char *s, int len, unsigned char out[11]){
+    int dots = 0;
+    if(to83(s, len, out) != 0) return 0;
+    for(int i = 0; i < len; i++){
+        char c = s[i];
+        if(c == '.'){ dots++; continue; }
+        if(!((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '~')) return 0;
+    }
+    return dots <= 1;
+}
+
+static int name_bad(const char *s, int len){
+    for(int i = 0; i < len; i++){
+        unsigned char c = (unsigned char)s[i];
+        if(c < 0x20 || c > 0x7E) return 1;
+        if(c == '"' || c == '*' || c == '/' || c == ':' || c == '<' || c == '>' ||
+           c == '?' || c == '\\' || c == '|') return 1;
+    }
+    return 0;
+}
+
+static int is_alnum_ascii(char c){
+    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
+}
+static unsigned char up_ascii(char c){
+    return (unsigned char)((c >= 'a' && c <= 'z') ? c - 32 : c);
+}
+
+/* Uzun ad icin benzersiz 8.3 takma ad: ILK~N.EXT. N = 1..9999; N'nin basamagi kadar taban
+   kisalir (N 1..9 icin 6 karakter, 10..99 icin 5 ...), boylece ad 8 karakteri asmaz. */
 static int make_alias(fat_vol *v, unsigned first, const char *name, int len, unsigned char out[11]){
-    unsigned char base[6], ext[3];
+    unsigned char base[8], ext[3];
     int dot = -1, nb = 0, ne = 0;
     for(int i = 0; i < len; i++) if(name[i] == '.') dot = i;
     int blen = (dot >= 0) ? dot : len;
-    for(int i = 0; i < blen && nb < 6; i++) if(is_alnum_ascii(name[i])) base[nb++] = up_ascii(name[i]);
+    for(int i = 0; i < blen && nb < 8; i++) if(is_alnum_ascii(name[i])) base[nb++] = up_ascii(name[i]);
     if(dot >= 0)
         for(int i = dot + 1; i < len && ne < 3; i++) if(is_alnum_ascii(name[i])) ext[ne++] = up_ascii(name[i]);
     if(nb == 0){ base[0] = '_'; nb = 1; }
-    for(int n = 1; n <= 9; n++){
+    for(unsigned n = 1; n <= 9999; n++){
         unsigned char s[11];
+        unsigned nd = (n < 10) ? 1 : (n < 100) ? 2 : (n < 1000) ? 3 : 4;
+        unsigned bl = ((unsigned)nb < 7 - nd) ? (unsigned)nb : 7 - nd;   /* taban + '~' + N <= 8 */
+        unsigned q = n;
         for(int k = 0; k < 11; k++) s[k] = ' ';
-        for(int i = 0; i < nb; i++) s[i] = base[i];
-        s[nb] = '~';
-        s[nb + 1] = (unsigned char)('0' + n);
+        for(unsigned i = 0; i < bl; i++) s[i] = base[i];
+        s[bl] = '~';
+        for(unsigned k = 0; k < nd; k++){                                  /* N'nin basamaklari */
+            s[bl + nd - k] = (unsigned char)('0' + q % 10);
+            q /= 10;
+        }
         for(int i = 0; i < ne; i++) s[8 + i] = ext[i];
         int r = dir_has_short(v, first, s);
         if(r < 0) return -1;
@@ -486,6 +495,27 @@ static void lfn_build(unsigned char *e, const char *name, int nlen, unsigned seq
     }
 }
 
+/* 8.3 girisini "AD.UZ" metnine cevirir (bosluklar atilir). out en az 13 bayt */
+static void fmt83(const unsigned char *e, char *out){
+    int k = 0;
+    for(int i = 0; i < 8 && e[i] != ' '; i++) out[k++] = (char)e[i];
+    if(e[8] != ' '){
+        out[k++] = '.';
+        for(int i = 8; i < 11 && e[i] != ' '; i++) out[k++] = (char)e[i];
+    }
+    out[k] = 0;
+}
+
+/* "." (dotdot=0) ya da ".." (dotdot=1) girisi */
+static void dir_dot(unsigned char *e, int dotdot, unsigned first){
+    for(unsigned i = 0; i < 32; i++) e[i] = 0;
+    for(unsigned i = 0; i < 11; i++) e[i] = ' ';
+    e[0] = '.';
+    if(dotdot) e[1] = '.';
+    e[11] = 0x10;
+    fat_w16(e + 26, first);
+}
+
 /* size bayti yeni kume zincirine yazar; ilk kume *first'e konur */
 static int fat_write_data(fat_vol *v, const unsigned char *data, unsigned size, unsigned *first){
     unsigned char sec[512];
@@ -509,58 +539,140 @@ static int fat_write_data(fat_vol *v, const unsigned char *data, unsigned size, 
     return 0;
 }
 
-int fat_create(fat_vol *v, const char *path, const unsigned char *data, unsigned size){
-    char pbuf[FAT_PATH_MAX];
-    const char *last = 0, *q, *name;
-    unsigned plen, first_dir, nlfn, need, start, ext = 0, ncl, csz, fc = 0, total;
-    int nlen = 0, rr;
-    unsigned char alias[11], e[32];
-    fat_file pf, tmp;
+/* Yeni giris icin yer plani: kisa ad, LFN giris sayisi, bos aralik, dizin genisleme */
+typedef struct {
+    unsigned char alias[11];
+    int need_lfn;
+    unsigned nlfn;
+    unsigned start;
+    unsigned ext;
+} ent_plan;
 
-    if(!v->wr) return -1;
+/* parent dizininde name icin plan cikarir; diske hicbir sey yazmaz */
+static int ent_plan_make(fat_vol *v, unsigned parent, const char *name, int nlen, ent_plan *p){
+    unsigned need, total, cper;
+    p->need_lfn = !short_ok(name, nlen, p->alias);
+    if(p->need_lfn && make_alias(v, parent, name, nlen, p->alias) != 0) return -1;
+    p->nlfn = p->need_lfn ? (unsigned)(nlen + 1 + 12) / 13 : 0;
+    need = p->nlfn + 1;
+    if(dir_find_run(v, parent, need, &p->start) < 0) return -1;
+    total = dir_total(v, parent);
+    p->ext = 0;
+    if(p->start + need > total){
+        if(parent == 0) return -1;                  /* kok dizin sabit boyutlu */
+        cper = v->spc * FAT_DIR_PER;
+        p->ext = (p->start + need - total + cper - 1) / cper;
+    }
+    return 0;
+}
+
+/* Plani uygular: gerekirse dizini genisletir, LFN ve kisa girisi yazar */
+static int ent_plan_commit(fat_vol *v, unsigned parent, const char *name, int nlen,
+                           const ent_plan *p, unsigned char attr, unsigned fc, unsigned size){
+    unsigned char e[32];
+    for(unsigned i = 0; i < p->ext; i++) if(dir_extend(v, parent) != 0) return -1;
+    for(unsigned i = 0; i < p->nlfn; i++){
+        unsigned seq = p->nlfn - i;
+        lfn_build(e, name, nlen, seq, seq == p->nlfn, lfn_checksum(p->alias));
+        if(dir_write(v, parent, p->start + i, e) != 0) return -1;
+    }
+    for(unsigned i = 0; i < 32; i++) e[i] = 0;
+    for(unsigned i = 0; i < 11; i++) e[i] = p->alias[i];
+    e[11] = attr;
+    fat_w16(e + 26, fc);
+    fat_w32(e + 28, size);
+    return dir_write(v, parent, p->start + p->nlfn, e);
+}
+
+/* path'i ust dizin ilk kumesi ve son bilesen adina ayirir */
+static int path_split(fat_vol *v, const char *path, unsigned *parent, const char **name, int *nlen){
+    char pbuf[FAT_PATH_MAX];
+    const char *last = 0, *q;
+    unsigned plen;
+    fat_file pf;
     for(q = path; *q; q++) if(*q == '/') last = q;
-    name = last ? last + 1 : path;
+    *name = last ? last + 1 : path;
     plen = last ? (unsigned)(last - path) : 0;
-    while(name[nlen]) nlen++;
-    if(nlen < 1 || nlen > FAT_NAME_MAX || plen >= FAT_PATH_MAX) return -1;
-    if(name_bad(name, nlen)) return -1;
+    *nlen = 0;
+    while((*name)[*nlen]) (*nlen)++;
+    if(*nlen < 1 || *nlen > FAT_NAME_MAX || plen >= FAT_PATH_MAX) return -1;
+    if(name_bad(*name, *nlen)) return -1;
     for(unsigned i = 0; i < plen; i++) pbuf[i] = path[i];
     pbuf[plen] = 0;
     if(fat_open(v, pbuf, &pf) != 0 || !pf.is_dir) return -1;
-    first_dir = pf.first;
-    if(dir_find(v, first_dir, name, nlen, &tmp) == 0) return -1;   /* zaten var */
+    *parent = pf.first;
+    return 0;
+}
 
-    /* kisa ad: 8.3'e uyuyorsa dogrudan, degilse LFN + benzersiz takma ad */
-    int need_lfn = !short_ok(name, nlen, alias);
-    if(need_lfn && make_alias(v, first_dir, name, nlen, alias) != 0) return -1;
-    nlfn = need_lfn ? (unsigned)(nlen + 1 + 12) / 13 : 0;
-    need = nlfn + 1;
-
-    /* once her sey hesaplanir; sonra yazilir (yer yetersizse hic bir sey degismez) */
-    rr = dir_find_run(v, first_dir, need, &start);
-    if(rr < 0) return -1;
-    total = dir_total(v, first_dir);
-    if(start + need > total){
-        if(first_dir == 0) return -1;               /* kok dizin sabit boyutlu */
-        unsigned cper = v->spc * FAT_DIR_PER;
-        ext = (start + need - total + cper - 1) / cper;
-    }
+int fat_create(fat_vol *v, const char *path, const unsigned char *data, unsigned size){
+    unsigned parent, fc = 0, csz, ncl;
+    const char *name;
+    int nlen;
+    fat_file tmp;
+    ent_plan p;
+    if(!v->wr) return -1;
+    if(path_split(v, path, &parent, &name, &nlen) != 0) return -1;
+    if(dir_find(v, parent, name, nlen, &tmp) == 0) return -1;   /* zaten var */
+    if(ent_plan_make(v, parent, name, nlen, &p) != 0) return -1;
     csz = v->spc * v->bps;
     ncl = size ? (size + csz - 1) / csz : 0;
-    if(fat_free_count(v) < ncl + ext) return -1;
-
-    for(unsigned i = 0; i < ext; i++) if(dir_extend(v, first_dir) != 0) return -1;
+    if(fat_free_count(v) < ncl + p.ext) return -1;             /* yer yoksa hic bir sey degismez */
     if(ncl && fat_write_data(v, data, size, &fc) != 0) return -1;
+    return ent_plan_commit(v, parent, name, nlen, &p, 0x20, fc, size);
+}
 
-    for(unsigned i = 0; i < nlfn; i++){
-        unsigned seq = nlfn - i;
-        lfn_build(e, name, nlen, seq, seq == nlfn, lfn_checksum(alias));
-        if(dir_write(v, first_dir, start + i, e) != 0) return -1;
+int fat_mkdir(fat_vol *v, const char *path){
+    unsigned parent, c, csz;
+    const char *name;
+    int nlen;
+    fat_file tmp;
+    ent_plan p;
+    unsigned char sec[512], zero[512];
+    if(!v->wr) return -1;
+    if(path_split(v, path, &parent, &name, &nlen) != 0) return -1;
+    if(dir_find(v, parent, name, nlen, &tmp) == 0) return -1;
+    if(ent_plan_make(v, parent, name, nlen, &p) != 0) return -1;
+    if(fat_free_count(v) < 1 + p.ext) return -1;
+    c = fat_find_free(v, 2);
+    if(!c) return -1;
+    if(fat_raw_put(v, c, fat_eoc(v)) != 0) return -1;
+    csz = v->spc;
+    for(unsigned i = 0; i < 512; i++){ sec[i] = 0; zero[i] = 0; }
+    dir_dot(sec, 0, c);                       /* "." -> kendisi */
+    dir_dot(sec + 32, 1, parent);             /* ".." -> ust dizin (kok: 0) */
+    for(unsigned s = 0; s < csz; s++)
+        if(v->wr(v->ctx, clus_sec(v, c) + s, 1, s == 0 ? sec : zero) != 0) return -1;
+    return ent_plan_commit(v, parent, name, nlen, &p, 0x10, c, 0);
+}
+
+int fat_list(fat_vol *v, const char *path, fat_list_fn cb, void *ctx){
+    fat_file d;
+    unsigned char e[32];
+    unsigned char lfn[FAT_NAME_BUF];
+    char nm[FAT_NAME_BUF];
+    int lfn_have = 0, lfn_ok = 0;
+    unsigned char lfn_sum = 0;
+    if(fat_open(v, path, &d) != 0 || !d.is_dir) return -1;
+    for(unsigned i = 0; i < FAT_NAME_BUF; i++) lfn[i] = 0;
+    for(unsigned idx = 0;; idx++){
+        int r = dir_read(v, d.first, idx, e);
+        if(r == 1) break;
+        if(r < 0) return -1;
+        if(e[0] == 0x00) break;
+        if(e[0] == 0xE5){ lfn_have = 0; continue; }
+        if(e[11] == FAT_ATTR_LFN){ lfn_step(lfn, &lfn_have, &lfn_ok, &lfn_sum, e); continue; }
+        int named = lfn_have && lfn_ok && lfn_sum == lfn_checksum(e);
+        lfn_have = 0;
+        if(e[11] & 0x08) continue;            /* birim etiketi */
+        if(e[0] == '.') continue;             /* "." ve ".." */
+        if(named){
+            int n = 0;
+            while(n < FAT_NAME_BUF - 1 && lfn[n]){ nm[n] = (char)lfn[n]; n++; }
+            nm[n] = 0;
+        } else {
+            fmt83(e, nm);
+        }
+        cb(ctx, nm, (e[11] & 0x10) ? 1u : 0u, rd32(e + 28));
     }
-    for(unsigned i = 0; i < 32; i++) e[i] = 0;
-    for(unsigned i = 0; i < 11; i++) e[i] = alias[i];
-    e[11] = 0x20;
-    fat_w16(e + 26, fc);
-    fat_w32(e + 28, size);
-    return dir_write(v, first_dir, start + nlfn, e);
+    return 0;
 }

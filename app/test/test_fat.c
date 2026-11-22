@@ -1,7 +1,8 @@
 /* fat.c icin host testi. Once imajlari uret:
      python3 app/test/make_fat_images.py <klasor>
-   Sonra: test_fat <klasor>/fat16.img <klasor>/fat12.img
-   Yazma testleri imajin gecici bir kopyasinda calisir; gercek dosya degismez. */
+   Sonra: test_fat <klasor>/fat16.img <klasor>/fat12.img [kayit16.img kayit12.img]
+   Yazma testleri imajin gecici bir kopyasinda calisir; gercek dosya degismez.
+   Son iki ad verilirse klasor testinin sonundaki kopyalar oraya kaydedilir (fsck.fat -n ile denetlenir). */
 #include <stdio.h>
 #include <string.h>
 #include "../fat.h"
@@ -268,12 +269,146 @@ static void write_tests(const char *path, int want_type, unsigned hello_size){
     fclose(t);
 }
 
+/* gecici kopyayi dst'ye kaydeder (fsck.fat ile denetlemek icin) */
+static int save_copy(FILE *t, const char *dst){
+    unsigned char blk[4096];
+    size_t n;
+    FILE *o = fopen(dst, "wb");
+    if(!o) return -1;
+    fflush(t);
+    if(fseek(t, 0, SEEK_SET) != 0){ fclose(o); return -1; }
+    while((n = fread(blk, 1, sizeof blk, t)) > 0){
+        if(fwrite(blk, 1, n, o) != n){ fclose(o); return -1; }
+    }
+    fclose(o);
+    return 0;
+}
+
+/* klasor listesi: fat_list geri cagirimiyla doldurulur */
+typedef struct {
+    char name[128][FAT_NAME_MAX + 1];
+    unsigned is_dir[128], size[128];
+    int n, over;
+} list_t;
+
+static void list_cb(void *ctx, const char *name, unsigned is_dir, unsigned size){
+    list_t *l = (list_t *)ctx;
+    unsigned k = 0;
+    if(l->n >= 128){ l->over = 1; return; }
+    while(k < FAT_NAME_MAX && name[k]){ l->name[l->n][k] = name[k]; k++; }
+    l->name[l->n][k] = 0;
+    l->is_dir[l->n] = is_dir;
+    l->size[l->n] = size;
+    l->n++;
+}
+
+static int list_find(const list_t *l, const char *name){
+    for(int i = 0; i < l->n; i++) if(strcmp(l->name[i], name) == 0) return i;
+    return -1;
+}
+
+/* ad listede mi? Klasorse is_dir=1 (boyut bakilmaz); dosyaysa boyut da tutmali */
+static int list_is(const list_t *l, const char *name, unsigned is_dir, unsigned size){
+    int i = list_find(l, name);
+    return i >= 0 && l->is_dir[i] == is_dir && (is_dir || l->size[i] == size);
+}
+
+/* klasor olusturma, ic ice klasor, dizin buyumesi, listeleme ve kalicilik */
+static void dir_tests(const char *path, int want_type, unsigned hello_size, const char *keep){
+    static unsigned char pat[3000];
+    static list_t L;
+    FILE *t = temp_copy(path);
+    img_t img;
+    fat_vol v;
+    char p[96], msg[200];
+    int ok_all = 1;
+    if(!t){ printf("FAIL klasor testi icin gecici kopya: %s\n", path); fails++; return; }
+    img.f = t;
+    for(unsigned i = 0; i < sizeof pat; i++) pat[i] = (unsigned char)((i * 13) & 0xFF);
+
+    snprintf(msg, sizeof msg, "%s: klasor testi icin baglandi (FAT%d)", path, want_type);
+    check(msg, fat_mount(&v, img_read, &img) == 0 && v.type == want_type);
+    fat_set_writer(&v, img_write);
+
+    check("klasor olusturuldu", fat_mkdir(&v, "Yeni Klasor") == 0);
+    check("ayni klasor buyuk harfle reddedilir", fat_mkdir(&v, "YENI KLASOR") == -1);
+    check("klasor adiyla ayni ad dosya olarak reddedilir", fat_create(&v, "Yeni Klasor", pat, 1) == -1);
+    check("gecersiz klasor adi reddedilir", fat_mkdir(&v, "bad*dir") == -1);
+    check("olmayan ust klasorde klasor reddedilir", fat_mkdir(&v, "NoSuch/Alt") == -1);
+    check("dosyanin icinde klasor reddedilir", fat_mkdir(&v, "HELLO.TXT/Alt") == -1);
+    check("ic ice klasor olusturuldu", fat_mkdir(&v, "Yeni Klasor/Alt Klasor") == 0);
+    check("klasor icine LFN dosya", fat_create(&v, "Yeni Klasor/Icerik Dosyasi.txt", (const unsigned char *)"ICERIK", 6) == 0);
+    check("ic ice klasore kucuk harfli dosya", fat_create(&v, "Yeni Klasor/Alt Klasor/derin.txt", (const unsigned char *)"DERIN2", 6) == 0);
+    check("klasor icindeki dosya okundu (kucuk harf yol)", file_is(&v, "yeni klasor/icerik dosyasi.txt", (const unsigned char *)"ICERIK", 6));
+    check("ic ice dosya okundu (buyuk harf yol)", file_is(&v, "Yeni Klasor/Alt Klasor/DERIN.TXT", (const unsigned char *)"DERIN2", 6));
+
+    /* dizin buyumesi: 20 dosya tek kumeye sigmaz; hepsinin takma adi ayni on ekle baslar */
+    for(int i = 0; i < 20; i++){
+        snprintf(p, sizeof p, "Yeni Klasor/Kayit %02d.txt", i);
+        if(fat_create(&v, p, pat, 100 + (unsigned)i) != 0) ok_all = 0;
+    }
+    check("klasor 20 dosyayla buyudu (ortak takma ad oneki)", ok_all);
+
+    L.n = 0; L.over = 0;
+    check("kok dizin listelendi", fat_list(&v, "", list_cb, &L) == 0);
+    check("kok dizin: klasorler dizin olarak gorunur",
+          list_is(&L, "Yeni Klasor", 1, 0) && list_is(&L, "SUB", 1, 0) && list_is(&L, "Long Dir Name", 1, 0));
+    check("kok dizin: 8.3 dosya boyutuyla", list_is(&L, "HELLO.TXT", 0, hello_size));
+    check("kok dizin: LFN dosyalar boyutuyla", list_is(&L, "HELLO.WIND", 0, 1500) && list_is(&L, "Long Name Sample.txt", 0, 7));
+    check("kok dizin: takma ad 8.3 olarak gorunur", list_is(&L, "STALEN~1.TXT", 0, 6));
+    {
+        static char long120[160], long255[260];
+        memset(long120, 'A', 120);
+        strcpy(long120 + 120, ".txt");
+        memset(long255, 'C', 255);
+        long255[255] = 0;
+        check("kok dizin: 124 karakterli ad", list_is(&L, long120, 0, 7));
+        check("kok dizin: 255 karakterli ad", list_is(&L, long255, 0, 7));
+    }
+    check("kok dizin: olmayan ad yok", list_find(&L, "NOPE.TXT") < 0);
+    check("dosya klasor gibi listelenmez", fat_list(&v, "HELLO.TXT", list_cb, &L) == -1);
+    check("olmayan klasor listelenmez", fat_list(&v, "NoSuch", list_cb, &L) == -1);
+
+    L.n = 0; L.over = 0;
+    check("yeni klasor listelendi", fat_list(&v, "Yeni Klasor", list_cb, &L) == 0);
+    check("yeni klasor: 22 girdi, . ve .. yok", L.n == 22 && !L.over && list_find(&L, ".") < 0 && list_find(&L, "..") < 0);
+    check("yeni klasor: LFN dosya boyutuyla", list_is(&L, "Icerik Dosyasi.txt", 0, 6));
+    check("yeni klasor: alt klasor dizin olarak", list_is(&L, "Alt Klasor", 1, 0));
+    ok_all = 1;
+    for(int i = 0; i < 20; i++){
+        snprintf(p, sizeof p, "Kayit %02d.txt", i);
+        if(!list_is(&L, p, 0, 100 + (unsigned)i)) ok_all = 0;
+    }
+    check("yeni klasor: 20 dosyanin hepsi boyutuyla listelendi", ok_all);
+
+    L.n = 0; L.over = 0;
+    check("ic ice klasor listelendi", fat_list(&v, "Yeni Klasor/Alt Klasor", list_cb, &L) == 0);
+    check("ic ice klasor: derin.txt (LFN, kucuk harf)", L.n == 1 && list_is(&L, "derin.txt", 0, 6));
+
+    /* yeniden bagla: yazilanlar diskte kalici mi? */
+    fflush(t);
+    check("klasor testinden sonra yeniden baglandi", fat_mount(&v, img_read, &img) == 0 && v.type == want_type);
+    L.n = 0; L.over = 0;
+    check("kalici: kok dizinde yeni klasor", fat_list(&v, "", list_cb, &L) == 0 && list_is(&L, "Yeni Klasor", 1, 0));
+    check("kalici: ic ice dosya icerigi", file_is(&v, "Yeni Klasor/Alt Klasor/derin.txt", (const unsigned char *)"DERIN2", 6));
+    check("kalici: buyuyen klasordeki son dosya", file_is(&v, "Yeni Klasor/Kayit 19.txt", pat, 119));
+    check("kalici: eski alt klasor dosyasi bozulmadi", file_is(&v, "SUB/INNER.TXT", (const unsigned char *)"ICERIDEN", 8));
+
+    if(keep){
+        if(save_copy(t, keep) == 0) printf("ok   klasor testi imaji kaydedildi: %s\n", keep);
+        else { printf("FAIL klasor testi imaji kaydedilemedi: %s\n", keep); fails++; }
+    }
+    fclose(t);
+}
+
 int main(int argc, char **argv){
-    if(argc < 3){ printf("kullanim: test_fat fat16.img fat12.img\n"); return 2; }
+    if(argc < 3){ printf("kullanim: test_fat fat16.img fat12.img [kayit16.img kayit12.img]\n"); return 2; }
     run_image(argv[1], 16, 5000);
     run_image(argv[2], 12, 3000);
     write_tests(argv[1], 16, 5000);
     write_tests(argv[2], 12, 3000);
+    dir_tests(argv[1], 16, 5000, argc > 3 ? argv[3] : NULL);
+    dir_tests(argv[2], 12, 3000, argc > 4 ? argv[4] : NULL);
 
     {
         fat_vol v;

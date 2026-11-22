@@ -60,7 +60,7 @@ jobs:
         name: WindOS-Quantum-ISO
         path: WindOS-Quantum.iso
 
-    - name: 💾 Test disk imajı oluştur (FAT16 + HELLO.WIN)
+    - name: 💾 Test disk imajı oluştur (FAT16 + HELLO.WIND)
       run: python3 app/test/make_disk.py WindOS-Disk.img
 
     - name: 💾 Disk imajını yükle (QEMU -hda ile denemek için)
