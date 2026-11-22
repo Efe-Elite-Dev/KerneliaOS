@@ -14,6 +14,9 @@ mkdir -p iso/boot/grub
 cp kernel.bin iso/boot/kernel.bin
 cp grub.cfg   iso/boot/grub/grub.cfg
 
+echo "[4b] Disk imaji (programlar) ISO'ya ekleniyor..."
+python3 app/test/make_disk.py iso/boot/disk.img
+
 echo "[5] ISO üretiliyor..."
 grub-mkrescue -o windos.iso iso
 

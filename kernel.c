@@ -1418,6 +1418,29 @@ static int WVOL_OK = 0;
 static unsigned char WIN_FILE[WIND_MAX_MEM + WIND_HDR_SIZE];
 static unsigned char WIN_MEM[WIND_MAX_MEM];
 
+/* RAM disk: GRUB'un yukledigi disk imaji (ISO'nun icinde, boot/disk.img).
+   Varsa FAT birimi buradan okunur; yoksa ATA diski kullanilir. */
+static const unsigned char *RD_BASE = 0;
+static unsigned RD_LEN = 0;
+
+static int ram_read(void *ctx, unsigned lba, unsigned count, unsigned char *buf){
+    (void)ctx;
+    if(!RD_BASE || lba > RD_LEN / 512) return -1;
+    unsigned off = lba * 512;
+    if(count > (RD_LEN - off) / 512) return -1;
+    for(unsigned i = 0; i < count * 512; i++) buf[i] = RD_BASE[off + i];
+    return 0;
+}
+
+/* Birimi bir kez baglar: once RAM disk, yoksa ATA */
+static int vol_ready(void){
+    if(WVOL_OK) return 1;
+    fat_read_fn rd = RD_BASE ? ram_read : ata_read;
+    if(fat_mount(&WVOL, rd, 0) != 0){ tl_add("DISK YOK VEYA FAT BICIMI TANINMADI"); return 0; }
+    WVOL_OK = 1;
+    return 1;
+}
+
 static void frame_wait(void);   /* asagida tanimli */
 
 static void wa_fill(int x, int y, int w, int h, unsigned c){ fr(x, y, w, h, c); }
@@ -1434,10 +1457,7 @@ static unsigned wa_ticks(void){ return TICKS; }
 
 /* "wind DOSYA": programi calistirir; program donene kadar kernel bekler (ring 0, guvenilen kod) */
 static void wind_run(const char *path){
-    if(!WVOL_OK){
-        if(fat_mount(&WVOL, ata_read, 0) != 0){ tl_add("DISK YOK VEYA FAT BICIMI TANINMADI"); return; }
-        WVOL_OK = 1;
-    }
+    if(!vol_ready()) return;
     fat_file f;
     if(fat_open(&WVOL, path, &f) != 0 || f.is_dir){ tl_add("DOSYA BULUNAMADI"); return; }
     if(f.size > WIND_HDR_SIZE + WIND_MAX_MEM){ tl_add("WIND: DOSYA COK BUYUK"); return; }
@@ -1558,10 +1578,7 @@ static void exe_call(unsigned entry){
 
 /* "exe DOSYA": PE32 programini yukler, kernel32 importlarini baglar ve calistirir */
 static void exe_run(const char *path){
-    if(!WVOL_OK){
-        if(fat_mount(&WVOL, ata_read, 0) != 0){ tl_add("DISK YOK VEYA FAT BICIMI TANINMADI"); return; }
-        WVOL_OK = 1;
-    }
+    if(!vol_ready()) return;
     fat_file f;
     if(fat_open(&WVOL, path, &f) != 0 || f.is_dir){ tl_add("DOSYA BULUNAMADI"); return; }
     if(f.size > EXE_FILE_MAX){ tl_add("EXE: DOSYA COK BUYUK"); return; }
@@ -2429,6 +2446,17 @@ void kernel_main(multiboot_info_t *mbi){
     if(flags & 1){ u32 mem_upper_kb = *((u32*)((u8*)mbi + 8)); SYS_RAM_MB = (mem_upper_kb / 1024) + 1; }
     else SYS_RAM_MB = 0;                    /* bilinmiyor */
 
+    /* GRUB modulleri: flags bit 3 (mods) -> ilk modul disk imaji */
+    {
+        u32 mflags = *((u32*)((u8*)mbi + 0));
+        u32 mcount = (mflags & 8) ? *((u32*)((u8*)mbi + 20)) : 0;
+        u32 maddr  = (mflags & 8) ? *((u32*)((u8*)mbi + 24)) : 0;
+        if(mcount > 0){
+            u32 mstart = *((u32*)(unsigned long)maddr);
+            u32 mend   = *((u32*)(unsigned long)(maddr + 4));
+            if(mend > mstart){ RD_BASE = (const unsigned char *)(unsigned long)mstart; RD_LEN = mend - mstart; }
+        }
+    }
     mouse_init(); term_init();
     nic_init();
     ac97_init();
