@@ -11,6 +11,11 @@
  */
 #include "kernel.h"
 
+/* Disk (ATA PIO), FAT12/16 okuyucu ve .wind ayristiricisi: app/ klasorunden, tek derleme biriminde */
+#include "app/ata.c"
+#include "app/fat.c"
+#include "app/wind.c"
+
 typedef unsigned int   u32;
 typedef unsigned short u16;
 typedef unsigned char  u8;
@@ -1405,6 +1410,66 @@ static void http_cmd(const char *arg){
     http_show();
 }
 
+/* ---- .wind calistirici: ATA diskinden FAT ile dosya okur, programi belleğe yukler,
+   kernel API tablosunu verip giris noktasini cagirir ---- */
+static fat_vol WVOL;
+static int WVOL_OK = 0;
+static unsigned char WIN_FILE[WIND_MAX_MEM + WIND_HDR_SIZE];
+static unsigned char WIN_MEM[WIND_MAX_MEM];
+
+static void frame_wait(void);   /* asagida tanimli */
+
+static void wa_fill(int x, int y, int w, int h, unsigned c){ fr(x, y, w, h, c); }
+static void wa_pixel(int x, int y, unsigned c){ pset(x, y, c); }
+static void wa_text(int x, int y, const char *s, unsigned c, int sc){
+    if(sc < 1) sc = 1;
+    if(sc > 4) sc = 4;
+    ds(x, y, s, c, 0, sc);
+}
+static void wa_present(void){ swap_buffers(); }
+static int  wa_key(void){ ps2_pump(); return (int)kbd_poll(); }
+static void wa_wait(void){ frame_wait(); }
+static unsigned wa_ticks(void){ return TICKS; }
+
+/* "wind DOSYA": programi calistirir; program donene kadar kernel bekler (ring 0, guvenilen kod) */
+static void wind_run(const char *path){
+    if(!WVOL_OK){
+        if(fat_mount(&WVOL, ata_read, 0) != 0){ tl_add("DISK YOK VEYA FAT BICIMI TANINMADI"); return; }
+        WVOL_OK = 1;
+    }
+    fat_file f;
+    if(fat_open(&WVOL, path, &f) != 0 || f.is_dir){ tl_add("DOSYA BULUNAMADI"); return; }
+    if(f.size > WIND_HDR_SIZE + WIND_MAX_MEM){ tl_add("WIND: DOSYA COK BUYUK"); return; }
+    unsigned n = 0;
+    while(n < f.size){
+        int r = fat_read(&WVOL, &f, WIN_FILE + n, f.size - n);
+        if(r <= 0) break;
+        n += (unsigned)r;
+    }
+    if(n != f.size){ tl_add("WIND: DOSYA OKUNAMADI"); return; }
+
+    wind_prog p;
+    int e = wind_parse(WIN_FILE, n, &p);
+    if(e != WIND_OK){ tl_add(wind_err_text(e)); return; }
+
+    for(unsigned i = 0; i < p.mem_size; i++) WIN_MEM[i] = 0;
+    for(unsigned i = 0; i < p.code_size; i++) WIN_MEM[i] = p.code[i];
+
+    wind_api api;
+    api.version = 1;
+    api.fill = wa_fill;
+    api.pixel = wa_pixel;
+    api.text = wa_text;
+    api.present = wa_present;
+    api.key = wa_key;
+    api.wait = wa_wait;
+    api.ticks = wa_ticks;
+    api.mem = WIN_MEM;
+    api.mem_size = p.mem_size;
+    ((wind_entry)(void *)(WIN_MEM + p.entry))(&api);
+    tl_add("WIND: PROGRAM BITTI");
+}
+
 static void term_exec(void){
     char line[TL_W];
     int n = TIN_LEN;
@@ -1425,7 +1490,7 @@ static void term_exec(void){
     const char *arg = &line[i];
     if(c == 0) return;
 
-    if(str_eq(cmd, "help")){ tl_add("KOMUTLAR: help ver mem echo clear time muzik miku not snake web exit lspci"); tl_add("AG: ping [ip]  (ornek: ping 10.0.2.2)"); tl_add("SES: ses [hz]  (ornek: ses 440)"); tl_add("HTTP: http ip[:port][/yol]"); }
+    if(str_eq(cmd, "help")){ tl_add("KOMUTLAR: help ver mem echo clear time muzik miku not snake web exit lspci"); tl_add("AG: ping [ip]  (ornek: ping 10.0.2.2)"); tl_add("SES: ses [hz]  (ornek: ses 440)"); tl_add("WIND: wind DOSYA  (ornek: wind HELLO.WIN)"); tl_add("HTTP: http ip[:port][/yol]"); }
     else if(str_eq(cmd, "ver"))   tl_add("WindOS 18.1 (x86, 32-bit)");
     else if(str_eq(cmd, "mem")){
         char b[TL_W]; kcpy(b, "FIZIKSEL RAM (MULTIBOOT): ");
@@ -1446,6 +1511,7 @@ static void term_exec(void){
     else if(str_eq(cmd, "ping"))  ping_cmd(arg);
     else if(str_eq(cmd, "ses"))   ses_cmd(arg);
     else if(str_eq(cmd, "http"))  http_cmd(arg);
+    else if(str_eq(cmd, "wind"))  wind_run(arg);
     else {
         char b[TL_W];
         app_str(b, "BILINMEYEN KOMUT: ", cmd);

@@ -34,7 +34,8 @@ def entry(name, attr, first, size):
     return struct.pack("<11sB10sHHHI", raw, attr, b"\0" * 10, 0, 0, first, size)
 
 
-def build(kind):
+def build(kind, extra=None):
+    """extra: {"AD.UZ": bytes} -> kok dizine ek dosyalar"""
     if kind == "fat16":
         bps, spc, reserved, nfats, root_ent, total, media, fmt = 512, 4, 1, 2, 512, 32768, 0xF8, 16
     else:
@@ -113,6 +114,10 @@ def build(kind):
 
     root = entry("HELLO.TXT", 0x20, cs_hello[0], len(hello)) + \
         entry("SUB", 0x10, cs_sub[0], 0)
+    for name, data in (extra or {}).items():
+        cs_x = alloc(len(data))
+        write_clusters(cs_x, data)
+        root += entry(name, 0x20, cs_x[0], len(data))
     root_off = (reserved + nfats * fatsz) * bps
     img[root_off:root_off + len(root)] = root
 

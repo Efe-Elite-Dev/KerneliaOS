@@ -14,45 +14,45 @@
 #define ST_DF  0x20
 #define ST_BSY 0x80
 
-static inline unsigned char inb(unsigned short port){
+static inline unsigned char ata_inb(unsigned short port){
     unsigned char r;
     __asm__ volatile("inb %1, %0" : "=a"(r) : "Nd"(port));
     return r;
 }
-static inline void outb(unsigned short port, unsigned char v){
+static inline void ata_outb(unsigned short port, unsigned char v){
     __asm__ volatile("outb %0, %1" : : "a"(v), "Nd"(port));
 }
 /* 16 bitlik sozcukleri porttan buf'a oku (n sozcuk) */
-static inline void insw(unsigned short port, unsigned char *buf, unsigned n){
+static inline void ata_insw(unsigned short port, unsigned char *buf, unsigned n){
     __asm__ volatile("rep insw" : "+D"(buf), "+c"(n) : "d"(port) : "memory");
 }
 
 /* 400 ns bekleme: durum portunu dort kez oku */
-static void ata_delay(void){ for(int i = 0; i < 4; i++) (void)inb(ATA_CMD); }
+static void ata_delay(void){ for(int i = 0; i < 4; i++) (void)ata_inb(ATA_CMD); }
 
 static int ata_wait_ready(void){
     for(unsigned t = 0; t < 1000000u; t++){
-        if(!(inb(ATA_CMD) & ST_BSY)) return 0;
+        if(!(ata_inb(ATA_CMD) & ST_BSY)) return 0;
     }
     return -1;
 }
 
 static int ata_read_one(unsigned lba, unsigned char *buf){
     if(ata_wait_ready() != 0) return -1;
-    outb(ATA_DRVH, (unsigned char)(0xE0 | ((lba >> 24) & 0x0F)));   /* ana surucu, LBA */
-    outb(ATA_SECC, 1);
-    outb(ATA_LBA0, (unsigned char)lba);
-    outb(ATA_LBA1, (unsigned char)(lba >> 8));
-    outb(ATA_LBA2, (unsigned char)(lba >> 16));
-    outb(ATA_CMD, 0x20);                                              /* READ SECTORS */
+    ata_outb(ATA_DRVH, (unsigned char)(0xE0 | ((lba >> 24) & 0x0F)));   /* ana surucu, LBA */
+    ata_outb(ATA_SECC, 1);
+    ata_outb(ATA_LBA0, (unsigned char)lba);
+    ata_outb(ATA_LBA1, (unsigned char)(lba >> 8));
+    ata_outb(ATA_LBA2, (unsigned char)(lba >> 16));
+    ata_outb(ATA_CMD, 0x20);                                              /* READ SECTORS */
     ata_delay();
     for(unsigned t = 0; ; t++){
-        unsigned char s = inb(ATA_CMD);
+        unsigned char s = ata_inb(ATA_CMD);
         if(s & (ST_ERR | ST_DF)) return -1;
         if(!(s & ST_BSY) && (s & ST_DRQ)) break;
         if(t > 1000000u) return -1;
     }
-    insw(ATA_DATA, buf, 256);   /* 256 sozcuk = 512 bayt */
+    ata_insw(ATA_DATA, buf, 256);   /* 256 sozcuk = 512 bayt */
     ata_delay();
     return 0;
 }
