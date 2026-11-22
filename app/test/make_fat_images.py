@@ -75,10 +75,11 @@ def lfn_entries(longname, short11, bad_sum=False):
     return out
 
 
-def build(kind, extra=None, bad_sum=()):
+def build(kind, extra=None, bad_sum=(), lfn_dir=False):
     """extra: {"AD.UZ": bytes} -> kok dizine ek dosyalar.
     Uzun adli (LFN) dosyalar icin 8.3 takma ad otomatik uretilir.
-    bad_sum: LFN sagla toplami bilerek yanlis yazilacak uzun adlar."""
+    bad_sum: LFN sagla toplami bilerek yanlis yazilacak uzun adlar.
+    lfn_dir: kok dizinde "Long Dir Name/Inner Long File.txt" (uzun adli dizin)."""
     if kind == "fat16":
         bps, spc, reserved, nfats, root_ent, total, media, fmt = 512, 4, 1, 2, 512, 32768, 0xF8, 16
     else:
@@ -144,12 +145,12 @@ def build(kind, extra=None, bad_sum=()):
     cs_x = alloc(6)
     write_clusters(cs_x, b"DERIN!")
 
+    cs_sub = alloc(csz)                    # ".." girisleri icin once ayrilir
     cs_deep = alloc(csz)
-    deep = entry(".", 0x10, cs_deep[0], 0) + entry("..", 0x10, 0, 0) + \
+    deep = entry(".", 0x10, cs_deep[0], 0) + entry("..", 0x10, cs_sub[0], 0) + \
         entry("X.TXT", 0x20, cs_x[0], 6)
     write_clusters(cs_deep, deep.ljust(csz, b"\0"))
 
-    cs_sub = alloc(csz)
     sub = entry(".", 0x10, cs_sub[0], 0) + entry("..", 0x10, 0, 0) + \
         entry("INNER.TXT", 0x20, cs_inner[0], 8) + \
         entry("DEEP", 0x10, cs_deep[0], 0)
@@ -157,6 +158,19 @@ def build(kind, extra=None, bad_sum=()):
 
     root = entry("HELLO.TXT", 0x20, cs_hello[0], len(hello)) + \
         entry("SUB", 0x10, cs_sub[0], 0)
+    if lfn_dir:
+        # Uzun adli dizin: kendi "." ve ".." girisleri ve LFN'li bir dosya
+        cs_ld = alloc(csz)
+        cs_li = alloc(8)
+        write_clusters(cs_li, b"ICI UZUN")
+        li_short = name83("INNERL~1.TXT")
+        ld = entry(".", 0x10, cs_ld[0], 0) + entry("..", 0x10, 0, 0) + \
+            lfn_entries("Inner Long File.txt", li_short) + \
+            struct.pack("<11sB10sHHHI", li_short, 0x20, b"\0" * 10, 0, 0, cs_li[0], 8)
+        write_clusters(cs_ld, ld.ljust(csz, b"\0"))
+        ld_short = name83("LONGDI~1")
+        root += lfn_entries("Long Dir Name", ld_short) + \
+            struct.pack("<11sB10sHHHI", ld_short, 0x10, b"\0" * 10, 0, 0, cs_ld[0], 0)
     for name, data in (extra or {}).items():
         cs_x = alloc(len(data))
         write_clusters(cs_x, data)
@@ -191,6 +205,10 @@ def build(kind, extra=None, bad_sum=()):
     struct.pack_into("<H", bs, 22, fatsz)
     struct.pack_into("<H", bs, 24, 63)
     struct.pack_into("<H", bs, 26, 255)
+    bs[38] = 0x29                                 # genisletilmis BPB imzasi
+    bs[39:43] = b"\x12\x34\x56\x78"               # birim seri numarasi
+    bs[43:54] = b"NO NAME    "                    # birim etiketi
+    bs[54:62] = b"FAT16   " if fmt == 16 else b"FAT12   "
     bs[510] = 0x55
     bs[511] = 0xAA
     img[0:bps] = bs
@@ -204,7 +222,9 @@ LFN_EXTRA = {
     "Long Name Sample.txt": b"UZUN AD",                  # 20 karakter, 2 LFN girisi
     "a very long file name for testing.dat": b"LFN3",    # 36 karakter, 3 LFN girisi
     "Stale Name.txt": b"YANLIS",                         # sagla toplami bozuk: uzun ad bulunamamali,
-                                                         # ama kisa ad STALE~1.TXT acilabilmeli
+                                                         # ama kisa ad STALEN~1.TXT acilabilmeli
+    "A" * 120 + ".txt": b"LONG120",                      # 120 karakter (eski 80 sinirinin ustu)
+    "C" * 255: b"LONG255",                               # en uzun ad (255 karakter, 20 LFN girisi)
 }
 LFN_BAD_SUM = ("Stale Name.txt",)
 
@@ -215,7 +235,7 @@ def main():
     for kind in ("fat16", "fat12"):
         path = os.path.join(out, kind + ".img")
         with open(path, "wb") as f:
-            f.write(build(kind, LFN_EXTRA, bad_sum=LFN_BAD_SUM))
+            f.write(build(kind, LFN_EXTRA, bad_sum=LFN_BAD_SUM, lfn_dir=True))
         print("yazildi:", path)
 
 
