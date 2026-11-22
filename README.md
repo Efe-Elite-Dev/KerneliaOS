@@ -76,6 +76,8 @@ python tools/chromium_bridge.py        # 127.0.0.1:8088 (WindOS icinden 10.0.2.2
 
 WindOS'ta TARAYICI'yı açıp adres yazın (ör. www.youtube.com) ve Enter'a basın. Ok tuşları sayfayı kaydırır, sol tık bağlantıya tıklar. Köprü kapalıysa IP:PORT/yol adresleri eski metin tarayıcısıyla açılır.
 
+YouTube video modu: youtube adresinde sayfa 360x202 olarak alınır ve WindOS'ta 2 kat büyütülerek gösterilir. Boşluk oynat/duraklat, sol/sağ ok ilerletir/geri sarar (YouTube kısayollarıyla aynı). Görüntü kareler halinde gelir; kare hızı ağ ve bilgisayar hızına bağlıdır. Ses, Chromium penceresiyle bilgisayarın hoparlöründen çalar; WindOS sesi almaz. Köprüyü pencere açmadan çalıştırmak için `--headless` ekleyin (ses çalmaz).
+
 🗺️ Roadmap
 [x] V13 Stable (x86 PC): Flawless execution of core kernel modules, UI design, and universal installer.
 

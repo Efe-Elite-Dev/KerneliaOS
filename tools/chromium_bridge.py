@@ -13,13 +13,18 @@ Kurulum (bir kez):
     python -m playwright install chromium
 
 Calistirma:
-    python tools/chromium_bridge.py              (varsayilan 127.0.0.1:8088)
+    python tools/chromium_bridge.py              (varsayilan 127.0.0.1:8088, gorunur Chromium penceresi)
+    python tools/chromium_bridge.py --headless   (pencere acmadan; ses calmaz)
     python tools/chromium_bridge.py --port 9000  (WindOS tarafinda BR_PORT da degismeli)
+
+Gorunur Chromium, sesi bilgisayarin hoparlorunden calar; WindOS sadece goruntuyu alir.
 
 HTTP protokolu (HTTP/1.0):
     GET /act?a=go&u=<adres>&w=<px>&h=<px>        adresi ac
     GET /act?a=scroll&dy=<px>&w=<px>&h=<px>      sayfayi kaydir (pozitif = asagi)
     GET /act?a=click&x=<px>&y=<px>&w=<px>&h=<px> gorunen alanda (viewport) tikla
+    GET /act?a=key&k=<tus>&w=<px>&h=<px>         tus bas (Space, ArrowLeft, ArrowRight, ...)
+    GET /act?a=frame&w=<px>&h=<px>               sayfanin simdiki karesini al (video icin)
 
 Basarili yanit: 200, Content-Type image/bmp, X-Url: gecerli adres.
 Hata yaniti: 502, text/plain olarak aciklama.
@@ -36,6 +41,7 @@ from PIL import Image
 from playwright.sync_api import sync_playwright
 
 DEFAULT_W, DEFAULT_H = 720, 408
+KEY_RE = re.compile(r"^[A-Za-z]{1,12}$")  # yalnizca Playwright tus adlari (Space, ArrowLeft, ...)
 GUEST_ALIAS = "10.0.2.2"  # QEMU user-mode agi: host makinenin loopback'i
 
 
@@ -59,9 +65,12 @@ def normalize(url):
 class Session:
     """Tek bir Chromium sayfasi; WindOS'un tarayici penceresiyle eslesir."""
 
-    def __init__(self):
+    def __init__(self, headless=False):
         self._pw = sync_playwright().start()
-        self._browser = self._pw.chromium.launch(headless=True)
+        # Video otomatik baslasin diye kullanici hareketi beklenmez
+        self._browser = self._pw.chromium.launch(
+            headless=headless,
+            args=["--autoplay-policy=no-user-gesture-required"])
         self._ctx = self._browser.new_context(
             viewport={"width": DEFAULT_W, "height": DEFAULT_H})
         self.page = self._ctx.new_page()
@@ -96,6 +105,10 @@ class Session:
         self.page.mouse.click(x, y)
         time.sleep(0.4)
         self._settle()
+
+    def key(self, name):
+        self.page.keyboard.press(name)
+        time.sleep(0.2)
 
     def bmp(self):
         png = self.page.screenshot(type="png")
@@ -142,6 +155,13 @@ class Handler(BaseHTTPRequestHandler):
                 s.scroll(clamp(int(q.get("dy", 0)), -4000, 4000))
             elif action == "click":
                 s.click(clamp(int(q["x"]), 0, w), clamp(int(q["y"]), 0, h))
+            elif action == "key":
+                name = q.get("k", "")
+                if not KEY_RE.match(name):
+                    raise ValueError("gecersiz tus: " + name[:20])
+                s.key(name)
+            elif action == "frame":
+                pass  # yalnizca simdiki kareyi al
             else:
                 raise ValueError("bilinmeyen islem: " + action)
             body = s.bmp()
@@ -156,9 +176,11 @@ def main():
     ap = argparse.ArgumentParser(description="WindOS Chromium koprusu")
     ap.add_argument("--port", type=int, default=8088)
     ap.add_argument("--bind", default="127.0.0.1")
+    ap.add_argument("--headless", action="store_true",
+                    help="Chromium penceresi acma (ses calmaz, test icin)")
     args = ap.parse_args()
 
-    Handler.session = Session()
+    Handler.session = Session(headless=args.headless)
     server = HTTPServer((args.bind, args.port), Handler)
     print(f"WindOS Chromium koprusu: {args.bind}:{args.port} "
           f"(WindOS icinden 10.0.2.2:{args.port}). Durdurmak icin Ctrl+C.")
