@@ -109,7 +109,7 @@ static int has_prefix(const char *s, const char *p) {
 static i32 isqrt_i(i32 v){ i32 r = 0; while((r + 1) * (r + 1) <= v) r++; return r; }
 
 /* ---- Font (8x8, bit0 en sol piksel) ---- */
-static const u8 F8[128][8]={
+static const u8 F8[256][8]={
  [' ']={0,0,0,0,0,0,0,0},['!']={0x18,0x3C,0x3C,0x18,0x18,0,0x18,0},['"']={0x36,0x36,0,0,0,0,0,0},['#']={0x36,0x7F,0x36,0x36,0x7F,0x36,0x36,0},
  ['$']={0x0C,0x3E,0x03,0x1E,0x30,0x1F,0x0C,0},['%']={0x63,0x33,0x18,0x0C,0x66,0x63,0,0},['&']={0x1C,0x36,0x1C,0x6E,0x3B,0x33,0x6E,0},['\'']={0x06,0x0C,0,0,0,0,0,0},
  ['(']={0x18,0x0C,0x06,0x06,0x06,0x0C,0x18,0},[')']={0x06,0x0C,0x18,0x18,0x18,0x0C,0x06,0},['*']={0x66,0x3C,0xFF,0x3C,0x66,0,0,0},['+']={0,0x0C,0x0C,0x3F,0x0C,0x0C,0,0},
@@ -125,7 +125,14 @@ static const u8 F8[128][8]={
  ['P']={0x3F,0x66,0x66,0x3E,0x06,0x06,0x0F,0},['Q']={0x1E,0x33,0x33,0x33,0x3B,0x1E,0x38,0},['R']={0x3F,0x66,0x66,0x3E,0x36,0x66,0x67,0},['S']={0x1E,0x33,0x07,0x0E,0x38,0x33,0x1E,0},
  ['T']={0x3F,0x2D,0x0C,0x0C,0x0C,0x0C,0x1E,0},['U']={0x33,0x33,0x33,0x33,0x33,0x33,0x3F,0},['V']={0x33,0x33,0x33,0x33,0x33,0x1E,0x0C,0},['W']={0x63,0x63,0x63,0x6B,0x7F,0x77,0x63,0},
  ['X']={0,0x63,0x36,0x1C,0x1C,0x36,0x63,0},['Y']={0,0x33,0x33,0x33,0x3E,0x30,0x33,0x1E},['Z']={0,0x3F,0x19,0x0C,0x26,0x3F,0,0},['{']={0x38,0x0C,0x0C,0x07,0x0C,0x0C,0x38,0},
- ['|']={0x18,0x18,0x18,0,0x18,0x18,0x18,0},['}']={0x07,0x0C,0x0C,0x38,0x0C,0x0C,0x07,0},['~']={0x6E,0x3B,0,0,0,0,0,0},['_']={0,0,0,0,0,0,0,0x7F}
+ ['|']={0x18,0x18,0x18,0,0x18,0x18,0x18,0},['}']={0x07,0x0C,0x0C,0x38,0x0C,0x0C,0x07,0},['~']={0x6E,0x3B,0,0,0,0,0,0},['_']={0,0,0,0,0,0,0,0x7F},
+/* Turkce harfler (app/keymap_tr.h): buyuk harf glifleri; kucuk ve buyuk kodlar ayni gorunur */
+[0x80]={0x3C,0x66,0x03,0x03,0x03,0x66,0x3C,0x0C}, [0x81]={0x3C,0x66,0x03,0x03,0x03,0x66,0x3C,0x0C},   /* c / C-cedilla */
+[0x82]={0x12,0x3C,0x66,0x03,0x73,0x63,0x66,0x7C}, [0x83]={0x12,0x3C,0x66,0x03,0x73,0x63,0x66,0x7C},   /* g / G-breve */
+[0x84]={0x36,0x1C,0x36,0x63,0x63,0x63,0x36,0x1C}, [0x85]={0x36,0x1C,0x36,0x63,0x63,0x63,0x36,0x1C},   /* o / O-umlaut */
+[0x86]={0x1E,0x33,0x07,0x0E,0x38,0x33,0x1E,0x0C}, [0x87]={0x1E,0x33,0x07,0x0E,0x38,0x33,0x1E,0x0C},   /* s / S-cedilla */
+[0x88]={0x33,0x33,0x33,0x33,0x33,0x33,0x33,0x3F}, [0x89]={0x33,0x33,0x33,0x33,0x33,0x33,0x33,0x3F},   /* u / U-umlaut */
+[0x8A]={0x1E,0x0C,0x0C,0x0C,0x0C,0x0C,0x1E,0},   [0x8B]={0x0C,0x1E,0x0C,0x0C,0x0C,0x0C,0x0C,0x1E}    /* dotless i / I-dot */
 };
 
 /* ========================================================================= */
@@ -196,7 +203,7 @@ static void rrg(i32 x, i32 y, i32 w, i32 h, i32 r, u32 c){ rr_impl(x, y, w, h, r
 static void dc(i32 x, i32 y, char ch, u32 fg, u32 bg, i32 sc){
     (void)bg;
     if(ch >= 'a' && ch <= 'z') ch -= 32;
-    if((u8)ch >= 128) ch = '?';
+    if((u8)ch >= 0x8C) ch = '?';   /* 0x80-0x8B: Turkce harf glifleri */
     const u8 *g = F8[(u8)ch];
     for(i32 row = 0; row < 8; row++){
         u8 bits = g[row];
@@ -253,7 +260,7 @@ static void swap_buffers(void){
 /* ========================================================================= */
 /* KLAVYE & FARE                                                             */
 /* ========================================================================= */
-static const char SCMAP[128] = { 0,27,'1','2','3','4','5','6','7','8','9','0','-','=',8,'\t','Q','W','E','R','T','Y','U','I','O','P','[',']','\n',0,'A','S','D','F','G','H','J','K','L',';','\'','`',0,'\\','Z','X','C','V','B','N','M',',','.','/',0,'*',0,' ',0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,'-',0,0,0,'+',0,0,0,0,0,0,0,0,0 };
+#include "app/keymap_tr.h"   /* Turkce Q klavye tablosu: TR_KEYS[tarama kodu][normal/shift] */
 static u8 K_SH = 0, K_CP = 0, K_ALT = 0;
 
 /* PS/2 veri portu (0x60) tek yerden okunur; baytlar klavye/fare kuyruguna ayrilir */
@@ -271,19 +278,13 @@ static void ps2_pump(void){
 static int kq_pop(u8 *d){ if(KQH == KQT) return 0; *d = KQ[KQH]; KQH = (KQH + 1) & 63; return 1; }
 static int mq_pop(u8 *d){ if(MQH == MQT) return 0; *d = MQ[MQH]; MQH = (MQH + 1) & 63; return 1; }
 
-#define KEY_UP    0x81
-#define KEY_DOWN  0x82
-#define KEY_LEFT  0x83
-#define KEY_RIGHT 0x84
+/* Ok tuslari: Turkce harf kodlarindan (0x80-0x8B) ayri bir aralikta */
+#define KEY_UP    0xF1
+#define KEY_DOWN  0xF2
+#define KEY_LEFT  0xF3
+#define KEY_RIGHT 0xF4
 
 /* Bir tus olayi dondurur: ASCII, ok kodu veya 0 (olay yok) */
-/* Shift'li noktalama (US duzeni): ornek ':' icin Shift+; */
-static char shift_sym(char c){
-    static const char from[] = "1234567890-=[]\\;'`,./";
-    static const char to[]   = "!@#$%^&*()_+{}|:\"~<>?";
-    for(int i = 0; from[i]; i++) if(from[i] == c) return to[i];
-    return c;
-}
 
 static u8 kbd_poll(void){
     static int ext = 0;
@@ -307,10 +308,11 @@ static u8 kbd_poll(void){
     if(sc == 0x2A || sc == 0x36){ K_SH = 1; return 0; }
     if(sc == 0x3A){ K_CP = !K_CP; return 0; }
     if(sc >= 128) return 0;
-    char c = SCMAP[sc]; if(!c) return 0;
-    if(c >= 'A' && c <= 'Z' && !(K_SH ^ K_CP)) c = (char)(c + 32);
-    if(K_SH) c = shift_sym(c);
-    return (u8)c;
+    u8 lo = TR_KEYS[sc][0], up = TR_KEYS[sc][1];
+    if(!lo) return 0;
+    /* Harf tuslari CapsLock ile de buyur; noktalama yalnizca Shift ile degisir */
+    int letter = (lo >= 'a' && lo <= 'z') || (lo >= 0x80 && lo <= 0x8B);
+    return (letter ? (K_SH ^ K_CP) : K_SH) ? up : lo;
 }
 
 static i32 MX = 512, MY = 384, MLB = 0, MRB = 0, PMLB = 0;
@@ -1749,6 +1751,11 @@ static void br_go(void){
     BR_URL[BR_ULEN] = 0;
     if(BR_ULEN == 0 || str_eq(BR_URL, "home")){ BR_PAGE = 0; return; }
     if(str_eq(BR_URL, "about")){ BR_PAGE = 2; return; }
+    /* Kisa yollar: youtube / youtube.com yazinca dogrudan YouTube acilir */
+    if(str_eq(BR_URL, "youtube") || str_eq(BR_URL, "youtube.com") || str_eq(BR_URL, "www.youtube.com")){
+        kcpy(BR_URL, "https://www.youtube.com/");
+        BR_ULEN = (int)klen(BR_URL);
+    }
     kcpy(BR_TARGET, BR_URL);
     if(!NIC_UP){ BR_PAGE = 1; kcpy(BR_ERR, "AG KARTI YOK (QEMU -nic user,model=rtl8139)"); return; }
 
