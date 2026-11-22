@@ -1413,8 +1413,11 @@ static void http_cmd(const char *arg){
 
 /* ---- .wind calistirici: ATA diskinden FAT ile dosya okur, programi belleğe yukler,
    kernel API tablosunu verip giris noktasini cagirir ---- */
-static fat_vol WVOL;
-static int WVOL_OK = 0;
+/* Depolama: MVOL yazilabilir (ATA diski, yoksa RAM disk); SVOL salt okunur kaynak
+   (GRUB'un yukledigi disk imaji). MVOL RAM ise ayni bellek oldugu icin SVOL kullanilmaz. */
+static fat_vol MVOL, SVOL;
+static int MVOL_STATE = 0, SVOL_STATE = 0;   /* 0: denenmedi, 1: hazir, -1: olmadi */
+static int MVOL_RAM = 0;                     /* 1: MVOL RAM disk (yeniden baslatinca silinir) */
 static unsigned char WIN_FILE[WIND_MAX_MEM + WIND_HDR_SIZE];
 static unsigned char WIN_MEM[WIND_MAX_MEM];
 
@@ -1432,13 +1435,112 @@ static int ram_read(void *ctx, unsigned lba, unsigned count, unsigned char *buf)
     return 0;
 }
 
-/* Birimi bir kez baglar: once RAM disk, yoksa ATA */
-static int vol_ready(void){
-    if(WVOL_OK) return 1;
-    fat_read_fn rd = RD_BASE ? ram_read : ata_read;
-    if(fat_mount(&WVOL, rd, 0) != 0){ tl_add("DISK YOK VEYA FAT BICIMI TANINMADI"); return 0; }
-    WVOL_OK = 1;
+static int ram_write(void *ctx, unsigned lba, unsigned count, const unsigned char *buf){
+    (void)ctx;
+    if(!RD_BASE || lba > RD_LEN / 512) return -1;
+    unsigned off = lba * 512;
+    if(count > (RD_LEN - off) / 512) return -1;
+    unsigned char *dst = (unsigned char *)RD_BASE;   /* GRUB modulu: yazilabilir RAM */
+    for(unsigned i = 0; i < count * 512; i++) dst[off + i] = buf[i];
+    return 0;
+}
+
+/* MVOL: once ATA diski (kalici), yoksa RAM disk. Bir kez denenir, sonuc onbellekte */
+static int mvol_ready(void){
+    if(MVOL_STATE != 0) return MVOL_STATE > 0;
+    MVOL_STATE = -1;
+    if(fat_mount(&MVOL, ata_read, 0) == 0){
+        fat_set_writer(&MVOL, ata_write);
+        MVOL_RAM = 0; MVOL_STATE = 1;
+    } else if(RD_BASE && fat_mount(&MVOL, ram_read, 0) == 0){
+        fat_set_writer(&MVOL, ram_write);
+        MVOL_RAM = 1; MVOL_STATE = 1;
+    }
+    return MVOL_STATE > 0;
+}
+
+/* SVOL: GRUB modulu (salt okunur). MVOL zaten RAM ise gerekmez */
+static int svol_ready(void){
+    if(SVOL_STATE != 0) return SVOL_STATE > 0;
+    SVOL_STATE = -1;
+    if(RD_BASE && fat_mount(&SVOL, ram_read, 0) == 0) SVOL_STATE = 1;
+    return SVOL_STATE > 0;
+}
+
+#define PNAME_MAX 96   /* program adi tamponu (terminal satiri TL_W ile sinirli) */
+
+static int has_dot(const char *s){
+    for(; *s; s++) if(*s == '.') return 1;
+    return 0;
+}
+
+/* dir + name yolunu dst'ye yazar; sigmazsa 0 */
+static int path_join(char *dst, unsigned cap, const char *dir, const char *name){
+    unsigned k = 0, j = 0;
+    while(dir[k]){ if(k + 1 >= cap) return 0; dst[k] = dir[k]; k++; }
+    while(name[j]){ if(k + 1 >= cap) return 0; dst[k++] = name[j++]; }
+    dst[k] = 0;
     return 1;
+}
+
+/* dir ("PROGRAMS/" ya da "") altindaki name dosyasini acar; klasor degilse 1 */
+static int open_in(fat_vol *v, const char *dir, const char *name, fat_file *f){
+    char path[PNAME_MAX + 16];
+    if(!path_join(path, sizeof path, dir, name)) return 0;
+    return fat_open(v, path, f) == 0 && !f->is_dir;
+}
+
+/* k. aday ad: 0 = ad olarak, 1 = ad.EXE, 2 = ad.WIND (uzantisiz adlarda) */
+static void cand_make(char *dst, const char *name, int k){
+    static const char *sfx[3] = { "", ".EXE", ".WIND" };
+    unsigned j = 0;
+    for(unsigned i = 0; name[i] && j < PNAME_MAX - 8; i++) dst[j++] = name[i];
+    for(unsigned i = 0; sfx[k][i] && j < PNAME_MAX - 1; i++) dst[j++] = sfx[k][i];
+    dst[j] = 0;
+}
+
+/* Programi bulur. Sira: MVOL:PROGRAMS/ (kurulu), MVOL koku, SVOL koku. src_only: PROGRAMS atlanir.
+   Uzantisiz adda once ad, sonra .EXE ve .WIND denenir. Donus 1: bulundu (f, vol, cand doldurulur). */
+static int prog_lookup(const char *name, int src_only, fat_file *f, fat_vol **vol, char *cand){
+    int n = has_dot(name) ? 1 : 3;
+    int mok = mvol_ready();
+    int sok = (mok && !MVOL_RAM) ? svol_ready() : 0;
+    for(int k = 0; k < n; k++){
+        cand_make(cand, name, k);
+        if(mok && !src_only && open_in(&MVOL, "PROGRAMS/", cand, f)){ *vol = &MVOL; return 1; }
+        if(mok && open_in(&MVOL, "", cand, f)){ *vol = &MVOL; return 1; }
+        if(sok && open_in(&SVOL, "", cand, f)){ *vol = &SVOL; return 1; }
+    }
+    return 0;
+}
+
+/* Dosyanin tamamini buf'a okur (f yeni acilmis olmali). Donus 0 basarili */
+static int file_load(fat_vol *v, fat_file *f, unsigned char *buf){
+    unsigned n = 0;
+    while(n < f->size){
+        int r = fat_read(v, f, buf + n, f->size - n);
+        if(r <= 0) return -1;
+        n += (unsigned)r;
+    }
+    return 0;
+}
+
+/* Programin turu: 'E' (PE32, "MZ"), 'W' (.wind, "WIND"), 0 taninmadi */
+static int img_kind(const unsigned char *b, unsigned n){
+    if(n >= 2 && b[0] == 'M' && b[1] == 'Z') return 'E';
+    if(n >= 4 && b[0] == 'W' && b[1] == 'I' && b[2] == 'N' && b[3] == 'D') return 'W';
+    return 0;
+}
+
+/* Ad bir programa aitse turu: 'E', 'W', 0 (taninmadi), -1 (bulunamadi) */
+static int prog_kind(const char *name){
+    fat_file f; fat_vol *v; char cand[PNAME_MAX];
+    unsigned char hd[4];
+    if(!prog_lookup(name, 0, &f, &v, cand)) return -1;
+    if(f.size == 0) return 0;
+    int r = fat_read(v, &f, hd, 4);
+    if(r <= 0) return 0;
+    return img_kind(hd, (unsigned)r);
 }
 
 static void frame_wait(void);   /* asagida tanimli */
@@ -1455,20 +1557,20 @@ static int  wa_key(void){ ps2_pump(); return (int)kbd_poll(); }
 static void wa_wait(void){ frame_wait(); }
 static unsigned wa_ticks(void){ return TICKS; }
 
+static void wind_exec(unsigned n);
+
 /* "wind DOSYA": programi calistirir; program donene kadar kernel bekler (ring 0, guvenilen kod) */
 static void wind_run(const char *path){
-    if(!vol_ready()) return;
-    fat_file f;
-    if(fat_open(&WVOL, path, &f) != 0 || f.is_dir){ tl_add("DOSYA BULUNAMADI"); return; }
+    if(!mvol_ready()){ tl_add("DISK YOK VEYA FAT BICIMI TANINMADI"); return; }
+    fat_file f; fat_vol *v; char cand[PNAME_MAX];
+    if(!prog_lookup(path, 0, &f, &v, cand)){ tl_add("DOSYA BULUNAMADI"); return; }
     if(f.size > WIND_HDR_SIZE + WIND_MAX_MEM){ tl_add("WIND: DOSYA COK BUYUK"); return; }
-    unsigned n = 0;
-    while(n < f.size){
-        int r = fat_read(&WVOL, &f, WIN_FILE + n, f.size - n);
-        if(r <= 0) break;
-        n += (unsigned)r;
-    }
-    if(n != f.size){ tl_add("WIND: DOSYA OKUNAMADI"); return; }
+    if(file_load(v, &f, WIN_FILE) != 0){ tl_add("WIND: DOSYA OKUNAMADI"); return; }
+    wind_exec(f.size);
+}
 
+/* WIN_FILE'daki n baytlik .wind imajini ayristirir ve calistirir */
+static void wind_exec(unsigned n){
     wind_prog p;
     int e = wind_parse(WIN_FILE, n, &p);
     if(e != WIND_OK){ tl_add(wind_err_text(e)); return; }
@@ -1577,19 +1679,19 @@ static void exe_call(unsigned entry){
 }
 
 /* "exe DOSYA": PE32 programini yukler, kernel32 importlarini baglar ve calistirir */
-static void exe_run(const char *path){
-    if(!vol_ready()) return;
-    fat_file f;
-    if(fat_open(&WVOL, path, &f) != 0 || f.is_dir){ tl_add("DOSYA BULUNAMADI"); return; }
-    if(f.size > EXE_FILE_MAX){ tl_add("EXE: DOSYA COK BUYUK"); return; }
-    unsigned n = 0;
-    while(n < f.size){
-        int r = fat_read(&WVOL, &f, EXE_FILE + n, f.size - n);
-        if(r <= 0) break;
-        n += (unsigned)r;
-    }
-    if(n != f.size){ tl_add("EXE: DOSYA OKUNAMADI"); return; }
+static void exe_exec(unsigned n);
 
+static void exe_run(const char *path){
+    if(!mvol_ready()){ tl_add("DISK YOK VEYA FAT BICIMI TANINMADI"); return; }
+    fat_file f; fat_vol *v; char cand[PNAME_MAX];
+    if(!prog_lookup(path, 0, &f, &v, cand)){ tl_add("DOSYA BULUNAMADI"); return; }
+    if(f.size > EXE_FILE_MAX){ tl_add("EXE: DOSYA COK BUYUK"); return; }
+    if(file_load(v, &f, EXE_FILE) != 0){ tl_add("EXE: DOSYA OKUNAMADI"); return; }
+    exe_exec(f.size);
+}
+
+/* EXE_FILE'daki n baytlik PE imajini yukler, kernel32 importlarini baglar ve calistirir */
+static void exe_exec(unsigned n){
     pe_info info;
     unsigned entry = 0;
     int e = pe_load(EXE_FILE, n, EXE_MEM, EXE_IMG_MAX, (unsigned)(void *)EXE_MEM,
@@ -1605,6 +1707,144 @@ static void exe_run(const char *path){
     app_str(part, "EXE: PROGRAM BITTI (KOD ", num);
     app_str(msg, part, ")");
     tl_add(msg);
+}
+
+/* ---- Kurulum: "kur DOSYA" programi kaynaktan PROGRAMS klasorune kopyalar.
+   Kurulu programlar "uygulamalar" ile listelenir, Spotlight'ta gorunur, adlariyla calisir. ---- */
+static void sp_refresh(void);   /* Spotlight bolumunde tanimli */
+
+static void tl_cat(char *b, const char *s){
+    int k = 0;
+    while(b[k]) k++;
+    for(int i = 0; s[i] && k < TL_W - 1; i++) b[k++] = s[i];
+    b[k] = 0;
+}
+
+/* .EXE ya da .WIND ile biten ad mi? (buyuk/kucuk harf farketmez) */
+static int prog_name_ok(const char *s){
+    int n = 0;
+    while(s[n]) n++;
+    if(n >= 4 && exe_name_is(s + n - 4, ".exe")) return 1;
+    if(n >= 5 && exe_name_is(s + n - 5, ".wind")) return 1;
+    return 0;
+}
+
+/* ad bir programsa calistirir (exe / wind). Program yoksa 0 doner, hicbir sey yazmaz */
+static int prog_try(const char *name){
+    int k = prog_kind(name);
+    if(k < 0) return 0;
+    if(k == 'E') exe_run(name);
+    else if(k == 'W') wind_run(name);
+    else tl_add("BU DOSYA CALISTIRILAMAZ (MZ ya da WIND basligi yok)");
+    return 1;
+}
+
+static void uyg_cb(void *ctx, const char *name, unsigned is_dir, unsigned size){
+    char b[TL_W], num[16];
+    (*(int *)ctx)++;
+    b[0] = 0;
+    tl_cat(b, "  ");
+    tl_cat(b, name);
+    if(is_dir){ tl_cat(b, "  <KLASOR>"); }
+    else {
+        itoa((int)size, num);
+        tl_cat(b, "  ");
+        tl_cat(b, num);
+        tl_cat(b, " BAYT");
+    }
+    tl_add(b);
+}
+
+/* "uygulamalar": PROGRAMS klasorundeki kurulu programlari listeler */
+static void uyg_list(void){
+    int cnt = 0;
+    fat_file d;
+    if(!mvol_ready()){ tl_add("DISK YOK: UYGULAMA LISTESI ALINAMADI"); return; }
+    if(fat_open(&MVOL, "PROGRAMS", &d) != 0 || !d.is_dir){ tl_add("KURULU UYGULAMA YOK  (kur DOSYA ile kurun)"); return; }
+    tl_add("KURULU UYGULAMALAR:");
+    fat_list(&MVOL, "PROGRAMS", uyg_cb, &cnt);
+    if(cnt == 0) tl_add("  (bos)");
+}
+
+/* kaynak kok dizindeki kurulabilir programlar */
+static void kur_list_cb(void *ctx, const char *name, unsigned is_dir, unsigned size){
+    char b[TL_W];
+    (void)size;
+    if(is_dir || !prog_name_ok(name)) return;
+    (*(int *)ctx)++;
+    b[0] = 0;
+    tl_cat(b, "  ");
+    tl_cat(b, name);
+    tl_add(b);
+}
+
+static void kur_list(void){
+    int cnt = 0;
+    fat_vol *src;
+    if(!mvol_ready()){ tl_add("DISK YOK: KURULABILIR PROGRAM LISTESI ALINAMADI"); return; }
+    src = (!MVOL_RAM && svol_ready()) ? &SVOL : &MVOL;
+    tl_add("KURULABILIR PROGRAMLAR (kur DOSYA ile kurun):");
+    fat_list(src, "", kur_list_cb, &cnt);
+    if(cnt == 0) tl_add("  (yok)");
+}
+
+/* MVOL'daki path dosyasi want ile birebir ayni mi? (diskten geri okunur) */
+static int verify_copy(const char *path, const unsigned char *want, unsigned n){
+    fat_file f;
+    unsigned char chunk[512];
+    unsigned pos = 0;
+    if(fat_open(&MVOL, path, &f) != 0 || f.is_dir || f.size != n) return 0;
+    while(pos < n){
+        unsigned take = (n - pos < sizeof chunk) ? n - pos : (unsigned)sizeof chunk;
+        int r = fat_read(&MVOL, &f, chunk, take);
+        if(r <= 0) return 0;
+        for(int i = 0; i < r; i++) if(chunk[i] != want[pos + i]) return 0;
+        pos += (unsigned)r;
+    }
+    return 1;
+}
+
+/* "kur": bos ise kurulabilirleri listeler; "kur DOSYA" programi PROGRAMS klasorune kurar */
+static void kur_cmd(const char *arg){
+    fat_file src, d, ex;
+    fat_vol *sv;
+    char name[PNAME_MAX], dst[PNAME_MAX + 16], b[TL_W], num[16];
+    int kind;
+    if(!arg[0]){ kur_list(); return; }
+    if(!mvol_ready()){ tl_add("KURULUM ICIN DISK YOK (ATA ya da RAM disk gerekli)"); return; }
+    if(!prog_lookup(arg, 1, &src, &sv, name)){ tl_add("KAYNAKTA BOYLE BIR PROGRAM YOK"); return; }
+    if(src.size == 0 || src.size > sizeof WIN_FILE){ tl_add("KUR: PROGRAM BOYUTU UYGUN DEGIL"); return; }
+    if(file_load(sv, &src, WIN_FILE) != 0){ tl_add("KUR: KAYNAK OKUNAMADI"); return; }
+    kind = img_kind(WIN_FILE, src.size);
+    if(kind == 'E'){
+        pe_info info;
+        int e = pe_parse(WIN_FILE, src.size, &info);
+        if(e != PE_OK){ tl_add(pe_err_text(e)); return; }
+    } else if(kind == 'W'){
+        wind_prog p;
+        int e = wind_parse(WIN_FILE, src.size, &p);
+        if(e != WIND_OK){ tl_add(wind_err_text(e)); return; }
+    } else {
+        tl_add("KUR: GECERSIZ PROGRAM (MZ ya da WIND basligi yok)");
+        return;
+    }
+    /* PROGRAMS klasoru yoksa olustur */
+    if(fat_open(&MVOL, "PROGRAMS", &d) != 0){
+        if(fat_mkdir(&MVOL, "PROGRAMS") != 0){ tl_add("KUR: PROGRAMS KLASORU OLUSTURULAMADI"); return; }
+    } else if(!d.is_dir){ tl_add("KUR: PROGRAMS ADLI BIR DOSYA VAR"); return; }
+    if(!path_join(dst, sizeof dst, "PROGRAMS/", name)){ tl_add("KUR: AD COK UZUN"); return; }
+    if(fat_open(&MVOL, dst, &ex) == 0){
+        b[0] = 0; tl_cat(b, "ZATEN KURULU: "); tl_cat(b, name); tl_add(b);
+        return;
+    }
+    if(fat_create(&MVOL, dst, WIN_FILE, src.size) != 0){ tl_add("KUR: YAZILAMADI (YER YOK ya da DISK HATASI)"); return; }
+    if(!verify_copy(dst, WIN_FILE, src.size)){ tl_add("KUR: DOGRULAMA BASARISIZ"); return; }
+    sp_refresh();
+    b[0] = 0;
+    tl_cat(b, "KURULDU: "); tl_cat(b, name); tl_cat(b, "  (");
+    itoa((int)src.size, num); tl_cat(b, num); tl_cat(b, " BAYT)");
+    tl_add(b);
+    if(MVOL_RAM) tl_add("UYARI: RAM DISKE KURULDU, YENIDEN BASLATINCA SILINIR");
 }
 
 static void term_exec(void){
@@ -1627,7 +1867,7 @@ static void term_exec(void){
     const char *arg = &line[i];
     if(c == 0) return;
 
-    if(str_eq(cmd, "help")){ tl_add("KOMUTLAR: help ver mem echo clear time muzik miku not snake web exit lspci"); tl_add("AG: ping [ip]  (ornek: ping 10.0.2.2)"); tl_add("SES: ses [hz]  (ornek: ses 440)"); tl_add("WIND: wind DOSYA  (ornek: wind HELLO.WIN)"); tl_add("EXE: exe DOSYA  (ornek: exe PE_HELLO.EXE)"); tl_add("HTTP: http ip[:port][/yol]"); }
+    if(str_eq(cmd, "help")){ tl_add("KOMUTLAR: help ver mem echo clear time muzik miku not snake web exit lspci"); tl_add("AG: ping [ip]  (ornek: ping 10.0.2.2)"); tl_add("SES: ses [hz]  (ornek: ses 440)"); tl_add("WIND: wind DOSYA  (ornek: wind HELLO.WIND)"); tl_add("EXE: exe DOSYA  (ornek: exe PE_HELLO.EXE)"); tl_add("KUR: kur [DOSYA]  uygulamalar  (ornek: kur PE_HELLO.EXE)"); tl_add("Kurulu programi adiyla calistir (ornek: pe_hello)"); tl_add("HTTP: http ip[:port][/yol]"); }
     else if(str_eq(cmd, "ver"))   tl_add("WindOS 18.1 (x86, 32-bit)");
     else if(str_eq(cmd, "mem")){
         char b[TL_W]; kcpy(b, "FIZIKSEL RAM (MULTIBOOT): ");
@@ -1650,6 +1890,9 @@ static void term_exec(void){
     else if(str_eq(cmd, "http"))  http_cmd(arg);
     else if(str_eq(cmd, "wind"))  wind_run(arg);
     else if(str_eq(cmd, "exe"))   exe_run(arg);
+    else if(str_eq(cmd, "kur"))   kur_cmd(arg);
+    else if(str_eq(cmd, "uygulamalar")) uyg_list();
+    else if(prog_try(cmd)) { }
     else {
         char b[TL_W];
         app_str(b, "BILINMEYEN KOMUT: ", cmd);
@@ -2106,6 +2349,11 @@ static const SpEntry SP_APPS[] = {
 #define SP_ROWS 6
 static char SP_BUF[32];
 static int  SP_LEN = 0, SP_SEL = 0;
+/* Kurulu programlar (PROGRAMS klasoru): dizinde SP_N'den sonra gelir */
+#define SP_INST_MAX 16
+#define SP_TOTAL    (SP_N + SP_INST_MAX)
+static char SP_INST[SP_INST_MAX][FAT_NAME_MAX + 1];
+static int  SP_INST_N = 0;
 
 static int sp_fold(int c){ return (c >= 'A' && c <= 'Z') ? c + 32 : c; }
 /* needle, hay icinde (buyuk/kucuk harf duyarsiz) geciyor mu */
@@ -2118,15 +2366,41 @@ static int sp_has(const char *hay, const char *needle){
     }
     return 0;
 }
-/* Eslesen kayit indekslerini out'a yazar, sayisini dondurur */
+static const char *sp_name_of(int i){ return i < SP_N ? SP_APPS[i].name : SP_INST[i - SP_N]; }
+static const char *sp_kw_of(int i){ return i < SP_N ? SP_APPS[i].kw : ""; }
+static const char *sp_tag_of(int i){ return i < SP_N ? SP_APPS[i].tag : "KURULU"; }
+static int sp_hit(int i){ return sp_has(sp_name_of(i), SP_BUF) || sp_has(sp_kw_of(i), SP_BUF); }
+
+/* Eslesen kayit indekslerini out'a yazar, sayisini dondurur. Kurulu programlar once gelir */
 static int sp_collect(int *out){
     int n = 0;
-    for(int i = 0; i < SP_N; i++)
-        if(sp_has(SP_APPS[i].name, SP_BUF) || sp_has(SP_APPS[i].kw, SP_BUF)) out[n++] = i;
+    for(int i = SP_N; i < SP_N + SP_INST_N; i++) if(sp_hit(i)) out[n++] = i;
+    for(int i = 0; i < SP_N; i++) if(sp_hit(i)) out[n++] = i;
     return n;
 }
 
+/* PROGRAMS klasorundeki programlari arama listesine alir */
+static void sp_inst_cb(void *ctx, const char *name, unsigned is_dir, unsigned size){
+    int k = 0;
+    (void)ctx; (void)size;
+    if(is_dir || SP_INST_N >= SP_INST_MAX || !prog_name_ok(name)) return;
+    while(name[k] && k < FAT_NAME_MAX){ SP_INST[SP_INST_N][k] = name[k]; k++; }
+    SP_INST[SP_INST_N][k] = 0;
+    SP_INST_N++;
+}
+
+static void sp_refresh(void){
+    SP_INST_N = 0;
+    if(mvol_ready()) fat_list(&MVOL, "PROGRAMS", sp_inst_cb, 0);
+}
+
 static void sp_run(int i){
+    if(i >= SP_N){                       /* kurulu program: terminalde calisir */
+        TERM_OPEN = 1; FOCUS = 1;
+        prog_try(SP_INST[i - SP_N]);
+        SPOTLIGHT_OPEN = 0;
+        return;
+    }
     switch(i){
         case 0:  FO = 1; break;
         case 1:  TERM_OPEN = 1; FOCUS = 1; break;
@@ -2147,10 +2421,11 @@ static void sp_run(int i){
 static void sp_open(void){
     SPOTLIGHT_OPEN = 1; START_MENU_OPEN = 0;
     SP_LEN = 0; SP_BUF[0] = 0; SP_SEL = 0;
+    sp_refresh();
 }
 
 static void sp_key(u8 c){
-    int hits[SP_N];
+    int hits[SP_TOTAL];
     if(c == 27){ SPOTLIGHT_OPEN = 0; return; }
     if(c == KEY_UP){ if(SP_SEL > 0) SP_SEL--; return; }
     if(c == KEY_DOWN){ SP_SEL++; return; }           /* ust siniri cizimde kesilir */
@@ -2167,7 +2442,7 @@ static void sp_key(u8 c){
 
 static void SPOTLIGHT_SEARCH(void){
     if(!SPOTLIGHT_OPEN) return;
-    int hits[SP_N];
+    int hits[SP_TOTAL];
     int n = sp_collect(hits);
     if(SP_SEL >= n) SP_SEL = (n > 0) ? n - 1 : 0;
     i32 sp_w = 600, sp_h = 60;
@@ -2191,12 +2466,11 @@ static void SPOTLIGHT_SEARCH(void){
         rrg(sp_x, py, sp_w, ph, 15, BG_BASE);
         rb(sp_x, py, sp_w, ph, PAN_BD, 1);
         for(i32 r = 0; r < rows; r++){
-            const SpEntry *e = &SP_APPS[hits[r]];
             i32 ry = py + 6 + r * 34;
             int sel = (r == SP_SEL);
             if(sel) rr(sp_x + 8, ry, sp_w - 16, 30, 8, WIN_BLUE);
-            ds(sp_x + 24, ry + 11, e->name, sel ? CW : CTXT, 0, 1);
-            ds(sp_x + sp_w - 110, ry + 11, e->tag, sel ? CW : CGY, 0, 1);
+            ds(sp_x + 24, ry + 11, sp_name_of(hits[r]), sel ? CW : CTXT, 0, 1);
+            ds(sp_x + sp_w - 110, ry + 11, sp_tag_of(hits[r]), sel ? CW : CGY, 0, 1);
             if(CLK(sp_x + 8, ry, sp_w - 16, 30)){ sp_run(hits[r]); return; }
         }
     } else if(SP_LEN > 0){

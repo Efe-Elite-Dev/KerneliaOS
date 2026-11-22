@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""QEMU icin WindOS disk imaji: FAT16, kokte HELLO.TXT, SUB/..., HELLO.WIN, PE_HELLO.EXE.
+"""QEMU icin WindOS disk imaji: FAT16, kokte HELLO.TXT, SUB/..., HELLO.WIND, PE_HELLO.EXE.
 
 Kullanim: python3 app/test/make_disk.py <cikti_dosyasi.img>
 (HELLO.WIN once app/samples/build_samples.py ile uretilir; betik bunu kendi
@@ -27,7 +27,7 @@ def main():
                        check=True, stdout=subprocess.DEVNULL)
         with open(os.path.join(tmp, "HELLO.WIN"), "rb") as f:
             wind = f.read()
-    files = {"HELLO.WIN": wind}
+    files = {"HELLO.WIND": wind}
     # PE ornegi: depodaki hazir derleme (MinGW gerekmez); yoksa derlemeyi dene
     prebuilt = os.path.join(ROOT, "app", "samples", "prebuilt", "PE_HELLO.EXE")
     if os.path.exists(prebuilt):

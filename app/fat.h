@@ -52,5 +52,14 @@ int fat_read(fat_vol *v, fat_file *f, unsigned char *buf, unsigned n);
    Ad 8.3'e uymuyorsa uzun ad (LFN) olarak yazilir. Donus 0 basarili; -1: yazma yok,
    ad zaten var, ad gecersiz, ust dizin yok, yer yok ya da G/C hatasi. */
 int fat_create(fat_vol *v, const char *path, const unsigned char *data, unsigned size);
+/* Klasor olustur: path "Dizin/Ad" (ust dizin var olmali). Yeni klasorde "." ve ".." girisleri olur.
+   Donus 0 basarili; -1: yazma yok, ad zaten var, ad gecersiz, ust dizin yok ya da yer yok. */
+int fat_mkdir(fat_vol *v, const char *path);
+
+/* Listeleme geri cagirimi: klasordeki her gercek girdi icin bir kez cagrilir.
+   name: uzun ad (LFN varsa) ya da 8.3 adi; is_dir: klasor mu; size: bayt (klasorde 0). */
+typedef void (*fat_list_fn)(void *ctx, const char *name, unsigned is_dir, unsigned size);
+/* path klasorunu listeler ("" ya da "/" kok dizin). "." ve ".." atlanir. Donus 0 basarili, -1 yok/klasor degil */
+int fat_list(fat_vol *v, const char *path, fat_list_fn cb, void *ctx);
 
 #endif
