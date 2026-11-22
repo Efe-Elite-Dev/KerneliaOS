@@ -37,4 +37,26 @@ typedef struct {
 /* img[0..n) bir .wind dosyasi. Gecerliyse out'u doldurur ve WIND_OK doner */
 int wind_parse(const unsigned char *img, unsigned n, wind_prog *out);
 
+/* Hata kodunun Turkce metni (terminal icin) */
+const char *wind_err_text(int e);
+
+/* ---- Program <-> kernel API'si ----
+   Program giris noktasina (entry) bu tablonun adresini argument olarak alir
+   (cdecl: void entry(const wind_api *api)). Programin kodu konuma bagimsiz
+   olmali: global veri ve mutlak adres kullanmaz; yalnizca api ve yigin. */
+typedef struct wind_api {
+    unsigned version;                                   /* 1 */
+    void (*fill)(int x, int y, int w, int h, unsigned color);
+    void (*pixel)(int x, int y, unsigned color);
+    void (*text)(int x, int y, const char *s, unsigned color, int scale);
+    void (*present)(void);                              /* arka tamponu ekrana kopyala */
+    int  (*key)(void);                                  /* tus: 0 yok, yoksa kod */
+    void (*wait)(void);                                 /* bir kare bekle */
+    unsigned (*ticks)(void);                            /* FRAME_HZ'lik sayac */
+    unsigned char *mem;                                 /* programin bellegi (kod burada) */
+    unsigned mem_size;
+} wind_api;
+
+typedef void (*wind_entry)(const wind_api *api);
+
 #endif
