@@ -447,23 +447,7 @@ static void START_MENU(void){
 
 }
 
-static void FILEMGR(void){
-    if(!FO) return;
-    i32 fw = 700, fh = 450, fx = FX, fy = FY;
-    if(!FD && MLB && !PMLB && MY >= fy && MY < fy + 35 && MX >= fx && MX < fx + fw - 40){ FD = 1; FDX = MX - fx; FDY = MY - fy; }
-    if(FD){
-        if(MLB){
-            FX = MX - FDX; FY = MY - FDY;
-            if(FX < 0) FX = 0;
-            if(FY < 0) FY = 0;
-            if(FX > (i32)SW - fw) FX = (i32)SW - fw;
-            if(FY > (i32)SH - fh) FY = (i32)SH - fh;
-        } else FD = 0;
-    }
-    DRAW_WINDOW(fx, fy, fw, fh, "DOSYA GEZGINI", PAN_BG);
-    dsc(fx, fy + fh / 2 - 16, fw, "DEPOLAMA SURUCUSU YOK", CGY, 0, 1);
-    dsc(fx, fy + fh / 2 + 6, fw, "Dosyalar okunamiyor.", CGY, 0, 1);
-}
+static void FILEMGR(void);   /* dosya yoneticisi: depolama bolumunde tanimli */
 
 static void DISPLAY_APP(void){
     if(!DISP_OPEN) return;
@@ -982,12 +966,40 @@ static void icmp_rx(u32 src, const u8 *m, int n){
 
 static void tcp_rx(u32 src, const u8 *s, int n);
 
+/* ---- GUVENLIK DUVARI (basit paket filtresi) ----
+   Gelen IPv4 paketleri islenmeden once denetlenir:
+   - engelli IP listesindeki kaynaklardan gelen tum paketler dusurulur
+   - duvar aciksa, izinli port disindaki yeni TCP baglanti istekleri (SYN) dusurulur
+   Giden trafige dokunmaz. ICMP (ping) varsayilan olarak izinlidir. */
+#define FW_BLK_MAX   8
+#define FW_ALLOW_MAX 8
+static int FW_ON = 1;
+static u32 FW_BLK[FW_BLK_MAX];
+static int FW_BLK_N = 0;
+static u32 FW_ALLOW[FW_ALLOW_MAX];   /* SYN'e izin verilen TCP portlari */
+static int FW_ALLOW_N = 0;
+static u32 FW_DROP = 0;              /* dusurulen paket sayisi */
+
+/* 1: paket dusurulmeli. s: TCP segmenti (proto 6) ya da ICMP govdesi */
+static int fw_drop(u32 src, u8 proto, const u8 *s, int n){
+    if(!FW_ON) return 0;
+    for(int i = 0; i < FW_BLK_N; i++) if(FW_BLK[i] == src){ FW_DROP++; return 1; }
+    if(proto == 6 && n >= 14 && (s[13] & 0x12) == 0x02){     /* SYN var, ACK yok: yeni baglanti */
+        u32 port = get16(s + 2);
+        int ok = 0;
+        for(int i = 0; i < FW_ALLOW_N; i++) if(FW_ALLOW[i] == port) ok = 1;
+        if(!ok){ FW_DROP++; return 1; }
+    }
+    return 0;
+}
+
 static void ip_rx(const u8 *p, int n){
     if(n < 20 || (p[0] >> 4) != 4) return;
     int ihl = (p[0] & 0x0F) * 4;
     int tot = get16(p + 2);
     if(ihl < 20 || tot < ihl || tot > n) return;
     if(get32(p + 16) != NET_IP) return;
+    if(fw_drop(get32(p + 12), p[9], p + ihl, tot - ihl)) return;
     if(p[9] == 1) icmp_rx(get32(p + 12), p + ihl, tot - ihl);
     else if(p[9] == 6) tcp_rx(get32(p + 12), p + ihl, tot - ihl);
 }
@@ -1847,6 +1859,175 @@ static void kur_cmd(const char *arg){
     if(MVOL_RAM) tl_add("UYARI: RAM DISKE KURULDU, YENIDEN BASLATINCA SILINIR");
 }
 
+/* ---- DOSYA GEZGINI: KAYNAK (kurulabilir dosyalar) ve UYGULAMALAR (PROGRAMS) sekmeleri.
+   Dosyayi secip KUR ile kurulur, CALISTIR ile calisir. Cift tiklama ayni islemi yapar.
+   Durum satiri son terminal satirini gosterir. ---- */
+#define FM_MAX  32
+#define FM_ROWS 12
+static char FM_NAME[FM_MAX][FAT_NAME_MAX + 1];
+static unsigned FM_SIZE[FM_MAX], FM_DIR[FM_MAX];
+static int FM_N = 0, FM_SEL = -1, FM_TAB = 0, FM_VALID = 0;
+static u32 FM_LAST_T = 0;
+
+static void fm_cb(void *ctx, const char *name, unsigned is_dir, unsigned size){
+    int k = 0;
+    (void)ctx;
+    if(FM_N >= FM_MAX) return;
+    while(name[k] && k < FAT_NAME_MAX){ FM_NAME[FM_N][k] = name[k]; k++; }
+    FM_NAME[FM_N][k] = 0;
+    FM_SIZE[FM_N] = size;
+    FM_DIR[FM_N] = is_dir;
+    FM_N++;
+}
+
+static void fm_refresh(void){
+    FM_N = 0; FM_SEL = -1;
+    if(!mvol_ready()) return;
+    if(FM_TAB == 0){
+        fat_vol *src = (!MVOL_RAM && svol_ready()) ? &SVOL : &MVOL;
+        fat_list(src, "", fm_cb, 0);
+    } else {
+        fat_list(&MVOL, "PROGRAMS", fm_cb, 0);
+    }
+}
+
+/* secili dosya icin islem: KAYNAK sekmesinde kur, UYGULAMALAR sekmesinde calistir */
+static void fm_act(void){
+    if(FM_SEL < 0 || FM_SEL >= FM_N){ tl_add("DOSYA GEZGINI: ONCE BIR DOSYA SECIN"); return; }
+    if(FM_DIR[FM_SEL] || !prog_name_ok(FM_NAME[FM_SEL])){
+        tl_add("DOSYA GEZGINI: BU DOSYA KURULAMAZ / CALISTIRILAMAZ (.exe ya da .wind gerekli)");
+        return;
+    }
+    if(FM_TAB == 0){
+        kur_cmd(FM_NAME[FM_SEL]);
+        fm_refresh();
+    } else {
+        TERM_OPEN = 1; FOCUS = 1;
+        prog_try(FM_NAME[FM_SEL]);
+    }
+}
+
+static const char *fm_status(void){ return TL_N > 0 ? TLINES[TL_N - 1] : ""; }
+
+static void FILEMGR(void){
+    i32 fw = 700, fh = 450, fx = FX, fy = FY;
+    static const char *TAB_NM[2] = { "KAYNAK", "UYGULAMALAR" };
+    if(!FO){ FM_VALID = 0; return; }
+    if(!FM_VALID){ fm_refresh(); FM_VALID = 1; }
+    if(!FD && MLB && !PMLB && MY >= fy && MY < fy + 35 && MX >= fx && MX < fx + fw - 40){ FD = 1; FDX = MX - fx; FDY = MY - fy; }
+    if(FD){
+        if(MLB){
+            FX = MX - FDX; FY = MY - FDY;
+            if(FX < 0) FX = 0;
+            if(FY < 0) FY = 0;
+            if(FX > (i32)SW - fw) FX = (i32)SW - fw;
+            if(FY > (i32)SH - fh) FY = (i32)SH - fh;
+        } else FD = 0;
+    }
+    DRAW_WINDOW(fx, fy, fw, fh, "DOSYA GEZGINI", PAN_BG);
+
+    for(int t = 0; t < 2; t++){
+        i32 tx = fx + 20 + t * 160, ty = fy + 46;
+        rr(tx, ty, 150, 28, 8, t == FM_TAB ? WIN_BLUE : 0xFF2A303Cu);
+        ds(tx + 14, ty + 10, TAB_NM[t], CW, 0, 1);
+        if(CLK(tx, ty, 150, 28) && FM_TAB != t){ FM_TAB = t; fm_refresh(); }
+    }
+    ds(fx + 20, fy + 84, FM_TAB == 0 ? "KAYNAK: /" : "UYGULAMALAR: /PROGRAMS", CGY, 0, 1);
+
+    i32 ly = fy + 106;
+    int shown = FM_N < FM_ROWS ? FM_N : FM_ROWS;
+    if(FM_N == 0) ds(fx + 24, ly + 6, "BU KLASORDE DOSYA YOK", CGY, 0, 1);
+    for(int r = 0; r < shown; r++){
+        i32 ry = ly + r * 22;
+        int sel = (r == FM_SEL);
+        if(sel) rr(fx + 16, ry, fw - 32, 20, 6, WIN_BLUE);
+        ds(fx + 24, ry + 6, FM_NAME[r], sel ? CW : CTXT, 0, 1);
+        if(FM_DIR[r]){
+            ds(fx + fw - 150, ry + 6, "KLASOR", sel ? CW : CGY, 0, 1);
+        } else {
+            char num[16], sz[TL_W];
+            itoa((int)FM_SIZE[r], num);
+            sz[0] = 0; tl_cat(sz, num); tl_cat(sz, " BAYT");
+            ds(fx + fw - 150, ry + 6, sz, sel ? CW : CGY, 0, 1);
+        }
+        if(CLK(fx + 16, ry, fw - 32, 20)){
+            int again = (FM_SEL == r && TICKS - FM_LAST_T < 30);
+            FM_SEL = r; FM_LAST_T = TICKS;
+            if(again){ FM_LAST_T = 0; fm_act(); }
+        }
+    }
+
+    i32 by = fy + fh - 44;
+    rr(fx + 20, by, 130, 30, 8, WIN_BLUE);
+    ds(fx + 36, by + 10, FM_TAB == 0 ? "KUR" : "CALISTIR", CW, 0, 1);
+    if(CLK(fx + 20, by, 130, 30)) fm_act();
+    rr(fx + 170, by, 130, 30, 8, 0xFF2A303Cu);
+    ds(fx + 196, by + 10, "YENILE", CTXT, 0, 1);
+    if(CLK(fx + 170, by, 130, 30)) fm_refresh();
+    ds(fx + 20, fy + fh - 74, fm_status(), CGN, 0, 1);
+}
+
+static void fw_status(void){
+    char b[TL_W], num[16];
+    b[0] = 0; tl_cat(b, "GUVENLIK DUVARI: "); tl_cat(b, FW_ON ? "ACIK" : "KAPALI");
+    tl_add(b);
+    b[0] = 0; tl_cat(b, "ENGELLI IP: "); itoa(FW_BLK_N, num); tl_cat(b, num);
+    tl_cat(b, "   IZINLI PORT: "); itoa(FW_ALLOW_N, num); tl_cat(b, num);
+    tl_cat(b, "   DUSURULEN PAKET: "); itoa((int)FW_DROP, num); tl_cat(b, num);
+    tl_add(b);
+}
+
+/* "guvenlik [ac|kapa|engelle IP|kaldir IP|izin PORT|liste]" */
+static void fw_cmd(const char *arg){
+    char w[16], ip[16], b[TL_W], num[16];
+    int k = 0;
+    const char *p = arg;
+    u32 v = 0;
+    while(*p == ' ') p++;
+    while(*p && *p != ' ' && k < 15) w[k++] = *p++;
+    w[k] = 0;
+    while(*p == ' ') p++;
+    if(w[0] == 0){ fw_status(); return; }
+    if(str_eq(w, "ac")){ FW_ON = 1; tl_add("GUVENLIK DUVARI ACILDI"); return; }
+    if(str_eq(w, "kapa")){ FW_ON = 0; tl_add("GUVENLIK DUVARI KAPATILDI (KORUMASIZ)"); return; }
+    if(str_eq(w, "engelle")){
+        if(!parse_ip(p, &v)){ tl_add("KULLANIM: guvenlik engelle a.b.c.d"); return; }
+        if(FW_BLK_N >= FW_BLK_MAX){ tl_add("ENGEL LISTESI DOLU"); return; }
+        FW_BLK[FW_BLK_N++] = v;
+        ip_str(v, ip);
+        b[0] = 0; tl_cat(b, "ENGELLENDI: "); tl_cat(b, ip); tl_add(b);
+        return;
+    }
+    if(str_eq(w, "kaldir")){
+        if(!parse_ip(p, &v)){ tl_add("KULLANIM: guvenlik kaldir a.b.c.d"); return; }
+        for(int i = 0; i < FW_BLK_N; i++) if(FW_BLK[i] == v){
+            for(int j = i; j + 1 < FW_BLK_N; j++) FW_BLK[j] = FW_BLK[j + 1];
+            FW_BLK_N--;
+            tl_add("ENGEL KALDIRILDI");
+            return;
+        }
+        tl_add("BU IP ENGELLI DEGIL");
+        return;
+    }
+    if(str_eq(w, "izin")){
+        int d = 0;
+        while(*p >= '0' && *p <= '9' && v < 65536){ v = v * 10 + (u32)(*p - '0'); p++; d++; }
+        if(!d || v == 0 || v > 65535 || *p){ tl_add("KULLANIM: guvenlik izin PORT  (1-65535)"); return; }
+        if(FW_ALLOW_N >= FW_ALLOW_MAX){ tl_add("IZIN LISTESI DOLU"); return; }
+        FW_ALLOW[FW_ALLOW_N++] = v;
+        b[0] = 0; tl_cat(b, "PORT IZINLI: "); itoa((int)v, num); tl_cat(b, num); tl_add(b);
+        return;
+    }
+    if(str_eq(w, "liste")){
+        tl_add("ENGELLI IP'LER:");
+        for(int i = 0; i < FW_BLK_N; i++){ ip_str(FW_BLK[i], ip); b[0] = 0; tl_cat(b, "  "); tl_cat(b, ip); tl_add(b); }
+        tl_add("IZINLI PORTLAR (SYN):");
+        for(int i = 0; i < FW_ALLOW_N; i++){ itoa((int)FW_ALLOW[i], num); b[0] = 0; tl_cat(b, "  "); tl_cat(b, num); tl_add(b); }
+        return;
+    }
+    tl_add("KULLANIM: guvenlik [ac|kapa|engelle IP|kaldir IP|izin PORT|liste]");
+}
+
 static void term_exec(void){
     char line[TL_W];
     int n = TIN_LEN;
@@ -1867,7 +2048,7 @@ static void term_exec(void){
     const char *arg = &line[i];
     if(c == 0) return;
 
-    if(str_eq(cmd, "help")){ tl_add("KOMUTLAR: help ver mem echo clear time muzik miku not snake web exit lspci"); tl_add("AG: ping [ip]  (ornek: ping 10.0.2.2)"); tl_add("SES: ses [hz]  (ornek: ses 440)"); tl_add("WIND: wind DOSYA  (ornek: wind HELLO.WIND)"); tl_add("EXE: exe DOSYA  (ornek: exe PE_HELLO.EXE)"); tl_add("KUR: kur [DOSYA]  uygulamalar  (ornek: kur PE_HELLO.EXE)"); tl_add("Kurulu programi adiyla calistir (ornek: pe_hello)"); tl_add("HTTP: http ip[:port][/yol]"); }
+    if(str_eq(cmd, "help")){ tl_add("KOMUTLAR: help ver mem echo clear time muzik miku not snake web exit lspci"); tl_add("AG: ping [ip]  (ornek: ping 10.0.2.2)"); tl_add("SES: ses [hz]  (ornek: ses 440)"); tl_add("WIND: wind DOSYA  (ornek: wind HELLO.WIND)"); tl_add("EXE: exe DOSYA  (ornek: exe PE_HELLO.EXE)"); tl_add("KUR: kur [DOSYA]  uygulamalar  (ornek: kur PE_HELLO.EXE)"); tl_add("Kurulu programi adiyla calistir (ornek: pe_hello)"); tl_add("GUVENLIK: guvenlik [ac|kapa|engelle IP|kaldir IP|izin PORT|liste]"); tl_add("HTTP: http ip[:port][/yol]"); }
     else if(str_eq(cmd, "ver"))   tl_add("WindOS 18.1 (x86, 32-bit)");
     else if(str_eq(cmd, "mem")){
         char b[TL_W]; kcpy(b, "FIZIKSEL RAM (MULTIBOOT): ");
@@ -1892,6 +2073,7 @@ static void term_exec(void){
     else if(str_eq(cmd, "exe"))   exe_run(arg);
     else if(str_eq(cmd, "kur"))   kur_cmd(arg);
     else if(str_eq(cmd, "uygulamalar")) uyg_list();
+    else if(str_eq(cmd, "guvenlik")) fw_cmd(arg);
     else if(prog_try(cmd)) { }
     else {
         char b[TL_W];
