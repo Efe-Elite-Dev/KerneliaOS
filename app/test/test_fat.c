@@ -91,6 +91,42 @@ static void run_image(const char *path, int want_type, unsigned hello_size){
     check("olmayan alt dosya", fat_open(&v, "SUB/NOPE.TXT", &f) == -1);
     check("dosya yerine dizin gibi kullanma", fat_open(&v, "HELLO.TXT/X", &f) == -1);
 
+    /* uzun dosya adlari (LFN) */
+    r = fat_open(&v, "HELLO.WIND", &f);
+    check("LFN HELLO.WIND acildi (8.3'e sigmayan uzanti)", r == 0 && f.size == 1500 && !f.is_dir);
+    if(r == 0){
+        int n = read_all(&v, &f, buf, sizeof buf);
+        check("HELLO.WIND icerigi", n == 1500 && pattern_ok(buf, 1500));
+    }
+    r = fat_open(&v, "hello.wind", &f);
+    check("LFN kucuk harfle acildi", r == 0 && f.size == 1500);
+
+    r = fat_open(&v, "Long Name Sample.txt", &f);
+    check("LFN 2 girisli ad acildi", r == 0 && f.size == 7);
+    if(r == 0){
+        int n = read_all(&v, &f, buf, sizeof buf);
+        check("LFN 2 girisli icerik", n == 7 && memcmp(buf, "UZUN AD", 7) == 0);
+    }
+    check("LFN buyuk harf farketmez", fat_open(&v, "LONG NAME SAMPLE.TXT", &f) == 0);
+    check("LFN eksik harf reddedilir", fat_open(&v, "Long Name Sampl.txt", &f) == -1);
+    check("LFN fazla harf reddedilir", fat_open(&v, "Long Name Sample.txtx", &f) == -1);
+
+    r = fat_open(&v, "a very long file name for testing.dat", &f);
+    check("LFN 3 girisli ad acildi", r == 0 && f.size == 4);
+    if(r == 0){
+        int n = read_all(&v, &f, buf, sizeof buf);
+        check("LFN 3 girisli icerik", n == 4 && memcmp(buf, "LFN3", 4) == 0);
+    }
+
+    /* sagla toplami bozuk zincir: uzun ad bulunamaz, ama kisa ad acilir */
+    check("bozuk LFN zinciri eslesmez", fat_open(&v, "Stale Name.txt", &f) == -1);
+    r = fat_open(&v, "stalen~1.txt", &f);
+    check("bozuk zincirdeki kisa ad acilir", r == 0 && f.size == 6);
+    if(r == 0){
+        int n = read_all(&v, &f, buf, sizeof buf);
+        check("kisa ad icerigi", n == 6 && memcmp(buf, "YANLIS", 6) == 0);
+    }
+
     fclose(fp);
 }
 

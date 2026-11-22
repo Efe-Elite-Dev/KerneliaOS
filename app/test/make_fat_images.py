@@ -34,8 +34,51 @@ def entry(name, attr, first, size):
     return struct.pack("<11sB10sHHHI", raw, attr, b"\0" * 10, 0, 0, first, size)
 
 
-def build(kind, extra=None):
-    """extra: {"AD.UZ": bytes} -> kok dizine ek dosyalar"""
+def lfn_checksum(short11):
+    s = 0
+    for c in short11:
+        s = (((s & 1) << 7) + (s >> 1) + c) & 0xFF
+    return s
+
+
+def needs_lfn(name):
+    """8.3 disinda kalan ad (uzun, kucuk harf ya da bosluklu) LFN ister"""
+    base, ext = name.rsplit(".", 1) if "." in name else (name, "")
+    return name != name.upper() or len(base) > 8 or len(ext) > 3 or " " in name
+
+
+def short_alias(name):
+    """Uzun ad icin 8.3 takma ad: ILK6~1.EXT (sadece test icin, sade bir kural)"""
+    base, ext = name.rsplit(".", 1) if "." in name else (name, "")
+    clean = "".join(c for c in base.upper() if c.isalnum())[:6] + "~1"
+    cext = "".join(c for c in ext.upper() if c.isalnum())[:3]
+    return clean + ("." + cext if cext else "")
+
+
+def lfn_entries(longname, short11, bad_sum=False):
+    """Uzun ad icin LFN girisleri; diskte once en yuksek sira (0x40 bayragi) gelir."""
+    units = [ord(c) for c in longname] + [0]           # 0x0000 sonlandirici
+    while len(units) % 13:
+        units.append(0xFFFF)                           # sonrasi 0xFFFF dolgu
+    n = len(units) // 13
+    csum = lfn_checksum(short11)
+    if bad_sum:
+        csum = (csum + 1) & 0xFF                       # bayat zincir simulasyonu
+    out = b""
+    for seq in range(n, 0, -1):
+        chunk = units[(seq - 1) * 13: seq * 13]
+        first = seq | (0x40 if seq == n else 0)
+        raw = struct.pack("<B5H", first, *chunk[0:5])
+        raw += struct.pack("<BBB6H", 0x0F, 0, csum, *chunk[5:11])
+        raw += struct.pack("<H2H", 0, *chunk[11:13])
+        out += raw
+    return out
+
+
+def build(kind, extra=None, bad_sum=()):
+    """extra: {"AD.UZ": bytes} -> kok dizine ek dosyalar.
+    Uzun adli (LFN) dosyalar icin 8.3 takma ad otomatik uretilir.
+    bad_sum: LFN sagla toplami bilerek yanlis yazilacak uzun adlar."""
     if kind == "fat16":
         bps, spc, reserved, nfats, root_ent, total, media, fmt = 512, 4, 1, 2, 512, 32768, 0xF8, 16
     else:
@@ -117,7 +160,13 @@ def build(kind, extra=None):
     for name, data in (extra or {}).items():
         cs_x = alloc(len(data))
         write_clusters(cs_x, data)
-        root += entry(name, 0x20, cs_x[0], len(data))
+        if needs_lfn(name):
+            alias = short_alias(name)
+            short = name83(alias)
+            root += lfn_entries(name, short, bad_sum=name in bad_sum)
+            root += struct.pack("<11sB10sHHHI", short, 0x20, b"\0" * 10, 0, 0, cs_x[0], len(data))
+        else:
+            root += entry(name, 0x20, cs_x[0], len(data))
     root_off = (reserved + nfats * fatsz) * bps
     img[root_off:root_off + len(root)] = root
 
@@ -149,13 +198,24 @@ def build(kind, extra=None):
     return bytes(img)
 
 
+# Test icin kok dizin LFN dosyalari (test_fat.c bunlari bekler)
+LFN_EXTRA = {
+    "HELLO.WIND": pattern(1500),                         # 8.3'e sigmayan uzanti
+    "Long Name Sample.txt": b"UZUN AD",                  # 20 karakter, 2 LFN girisi
+    "a very long file name for testing.dat": b"LFN3",    # 36 karakter, 3 LFN girisi
+    "Stale Name.txt": b"YANLIS",                         # sagla toplami bozuk: uzun ad bulunamamali,
+                                                         # ama kisa ad STALE~1.TXT acilabilmeli
+}
+LFN_BAD_SUM = ("Stale Name.txt",)
+
+
 def main():
     out = sys.argv[1] if len(sys.argv) > 1 else "."
     os.makedirs(out, exist_ok=True)
     for kind in ("fat16", "fat12"):
         path = os.path.join(out, kind + ".img")
         with open(path, "wb") as f:
-            f.write(build(kind))
+            f.write(build(kind, LFN_EXTRA, bad_sum=LFN_BAD_SUM))
         print("yazildi:", path)
 
 

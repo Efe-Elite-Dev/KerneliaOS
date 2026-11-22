@@ -2,7 +2,8 @@
    libc gerektirmez. Disk erisimi bir okuma geri cagirimi ile yapilir; boylece
    ATA surucusu, RAM disk ya da host dosyasi ayni kodla kullanilabilir.
 
-   Yol bicimi: "HELLO.TXT", "SUB/INNER.TXT" (buyuk/kucuk harf farketmez, 8.3 adlari). */
+   Yol bicimi: "HELLO.TXT", "SUB/INNER.TXT", "Uzun Ad.wind" (buyuk/kucuk harf farketmez;
+   uzun dosya adlari (LFN) desteklenir, en fazla 80 karakter). */
 #ifndef FAT_H
 #define FAT_H
 
