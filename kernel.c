@@ -1631,24 +1631,6 @@ static void exe_putc(char c){
     EXE_LINE[EXE_LN++] = c;
 }
 
-/* kernel32 alt kumesi (stdcall: cagiran degil cagrilan temizler) */
-static void *__attribute__((stdcall)) exe_GetStdHandle(unsigned id){
-    return (void *)(unsigned)(0x100u + (id & 0xFFu));     /* sahte tutamaclar */
-}
-static int __attribute__((stdcall)) exe_WriteFile(void *h, const unsigned char *buf, unsigned n,
-                                                  unsigned *written, void *ov){
-    (void)h; (void)ov;
-    for(unsigned i = 0; i < n; i++) exe_putc((char)buf[i]);
-    if(written) *written = n;
-    return 1;
-}
-static unsigned __attribute__((stdcall)) exe_GetTickCount(void){ return (unsigned)TICKS; }
-static void __attribute__((stdcall, noreturn)) exe_ExitProcess(unsigned code){
-    EXE_CODE = code;
-    __asm__ volatile("movl %0, %%esp\n\tjmp *%1" : : "m"(EXE_ESP), "m"(EXE_RET));
-    for(;;) { }
-}
-
 static int exe_name_is(const char *a, const char *b){
     for(;;){
         char x = *a++, y = *b++;
@@ -1657,38 +1639,6 @@ static int exe_name_is(const char *a, const char *b){
         if(x != y) return 0;
         if(!x) return 1;
     }
-}
-
-static unsigned exe_resolve(void *ctx, const char *dll, const char *name, unsigned ord){
-    (void)ctx;
-    if(!dll || !name || ord) return 0;                 /* yalnizca adla import */
-    if(!exe_name_is(dll, "kernel32.dll")) return 0;
-    if(exe_name_is(name, "ExitProcess"))    return (unsigned)(void *)exe_ExitProcess;
-    if(exe_name_is(name, "GetStdHandle"))   return (unsigned)(void *)exe_GetStdHandle;
-    if(exe_name_is(name, "WriteFile"))      return (unsigned)(void *)exe_WriteFile;
-    if(exe_name_is(name, "GetTickCount"))   return (unsigned)(void *)exe_GetTickCount;
-    return 0;
-}
-
-/* Giris noktasini cagirir. Donus adresi ve yigin kaydedilir; ExitProcess bunlara doner.
-   Callee-saved yazmaclar (ebx, esi, edi, ebp) cagri oncesi ve sonrasi ayni kalir. */
-static void exe_call(unsigned entry){
-    __asm__ volatile(
-        "pushl %%ebx\n\t"
-        "pushl %%esi\n\t"
-        "pushl %%edi\n\t"
-        "pushl %%ebp\n\t"
-        "movl $1f, %0\n\t"
-        "movl %%esp, %1\n\t"
-        "call *%2\n"
-        "1:\n\t"
-        "popl %%ebp\n\t"
-        "popl %%edi\n\t"
-        "popl %%esi\n\t"
-        "popl %%ebx\n\t"
-        : "=m"(EXE_RET), "=m"(EXE_ESP)
-        : "r"(entry)
-        : "eax", "ecx", "edx", "memory", "cc");
 }
 
 /* "exe DOSYA": PE32 programini yukler, kernel32 importlarini baglar ve calistirir */
@@ -1701,25 +1651,6 @@ static void exe_run(const char *path){
     if(f.size > EXE_FILE_MAX){ tl_add("EXE: DOSYA COK BUYUK"); return; }
     if(file_load(v, &f, EXE_FILE) != 0){ tl_add("EXE: DOSYA OKUNAMADI"); return; }
     exe_exec(f.size);
-}
-
-/* EXE_FILE'daki n baytlik PE imajini yukler, kernel32 importlarini baglar ve calistirir */
-static void exe_exec(unsigned n){
-    pe_info info;
-    unsigned entry = 0;
-    int e = pe_load(EXE_FILE, n, EXE_MEM, EXE_IMG_MAX, (unsigned)(void *)EXE_MEM,
-                    exe_resolve, 0, &info, &entry);
-    if(e != PE_OK){ tl_add(pe_err_text(e)); return; }
-
-    EXE_LN = 0;
-    EXE_CODE = 0;
-    exe_call(entry);
-    if(EXE_LN > 0) exe_flush();
-    char msg[TL_W], part[TL_W], num[16];
-    itoa((int)EXE_CODE, num);
-    app_str(part, "EXE: PROGRAM BITTI (KOD ", num);
-    app_str(msg, part, ")");
-    tl_add(msg);
 }
 
 /* ---- Kurulum: "kur DOSYA" programi kaynaktan PROGRAMS klasorune kopyalar.
@@ -2872,9 +2803,11 @@ static int animating(void){
 }
 
 /* Bellek, sayfalama, zamanlayici: mem.c (heap/frame), paging.c, sched.c */
+#include "app/heap.c"
 #include "app/mem.c"
 #include "app/paging.c"
 #include "app/sched.c"
+#include "app/usermode.c"
 
 /* ========================================================================= */
 /* GIRIS                                                                     */
@@ -2917,7 +2850,9 @@ void kernel_main(multiboot_info_t *mbi){
         }
     }
     /* Sira onemli: istisnalar (IDT) sayfalamadan once, sonra bellek, sonra gorevler */
+    gdt_init();          /* kernel/kullanici segmentleri ve TSS */
     exc_install();
+    user_init();         /* int 0x80 (ring 3'ten cagrilabilir) */
     mem_init(mbi);
     sched_init();
     task_create(bg_task);

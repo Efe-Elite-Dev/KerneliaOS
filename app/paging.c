@@ -26,7 +26,7 @@ static unsigned long long MEM_RAM_TOP = 0;
 /* Sayfalama acildiktan sonra bir hata, sessiz yeniden baslatma yerine       */
 /* okunabilir bir mesaj verir.                                              */
 /* ------------------------------------------------------------------------ */
-static void exc_panic(u32 n){
+static void __attribute__((noinline)) exc_panic(u32 n){
     __asm__ volatile("cli");
     u32 cr2 = 0;
     __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
@@ -44,11 +44,26 @@ static void exc_panic(u32 n){
     for(;;) __asm__ volatile("hlt");
 }
 
-#define EXC_STUB(n) __attribute__((interrupt, target("general-regs-only"))) static void exc##n(void *f){ (void)f; exc_panic(n); }
-EXC_STUB(0)  EXC_STUB(1)  EXC_STUB(2)  EXC_STUB(3)  EXC_STUB(4)  EXC_STUB(5)  EXC_STUB(6)  EXC_STUB(7)
-EXC_STUB(8)  EXC_STUB(9)  EXC_STUB(10) EXC_STUB(11) EXC_STUB(12) EXC_STUB(13) EXC_STUB(14) EXC_STUB(15)
-EXC_STUB(16) EXC_STUB(17) EXC_STUB(18) EXC_STUB(19) EXC_STUB(20) EXC_STUB(21) EXC_STUB(22) EXC_STUB(23)
-EXC_STUB(24) EXC_STUB(25) EXC_STUB(26) EXC_STUB(27) EXC_STUB(28) EXC_STUB(29) EXC_STUB(30) EXC_STUB(31)
+/* Kullanici modundan (CS RPL=3) gelen istisna: program sonlanir (usermode.c) */
+static void user_fault(u32 n, u32 cr2);
+
+/* f: istisna cercevesi (eip, cs, eflags, ...). cs'nin RPL'i 3 ise kullanici hatasi. */
+static void __attribute__((noinline)) exc_common(u32 n, void *f){
+    u32 cs = ((volatile u32 *)f)[1];
+    if(cs & 3u){
+        u32 cr2 = 0;
+        __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
+        user_fault(n, cr2);
+    }
+    exc_panic(n);
+}
+
+#define EXC_STUB(n)  __attribute__((interrupt, target("general-regs-only"))) static void exc##n(void *f){ exc_common(n, f); }
+#define EXC_STUBE(n) __attribute__((interrupt, target("general-regs-only"))) static void exc##n(void *f, u32 err){ (void)err; exc_common(n, f); }
+EXC_STUB(0)   EXC_STUB(1)   EXC_STUB(2)   EXC_STUB(3)   EXC_STUB(4)   EXC_STUB(5)   EXC_STUB(6)   EXC_STUB(7)
+EXC_STUBE(8)  EXC_STUB(9)   EXC_STUBE(10) EXC_STUBE(11) EXC_STUBE(12) EXC_STUBE(13) EXC_STUBE(14) EXC_STUB(15)
+EXC_STUB(16)  EXC_STUBE(17) EXC_STUB(18) EXC_STUB(19) EXC_STUB(20) EXC_STUB(21) EXC_STUB(22) EXC_STUB(23)
+EXC_STUB(24)  EXC_STUB(25) EXC_STUB(26) EXC_STUB(27) EXC_STUB(28) EXC_STUB(29) EXC_STUB(30) EXC_STUB(31)
 
 #define EXC_GATE(n) idt_gate(n, (u32)(unsigned long)exc##n, cs);
 
