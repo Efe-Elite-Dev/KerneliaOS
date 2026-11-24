@@ -401,11 +401,11 @@ static void DRAW_WINDOW(i32 x, i32 y, i32 w, i32 h, const char *title, u32 b_col
     disc(x + 60, y + 17, 6, CGN);
     if(CLK(x + 14, y + 11, 12, 12)){
         if(has_prefix(title, "DOSYA"))   FO = 0;
-        if(has_prefix(title, "WIND-TERM")) TERM_OPEN = 0;
+        if(has_prefix(title, "KERNELIA-TERM")) TERM_OPEN = 0;
         if(has_prefix(title, "SISTEM"))  SYS_OPEN = 0;
         if(has_prefix(title, "GOREV"))   TASKMGR_OPEN = 0;
         if(has_prefix(title, "EKRAN"))   DISP_OPEN = 0;
-        if(has_prefix(title, "WINDAI"))  AI_OPEN = 0;
+        if(has_prefix(title, "KEAI"))  AI_OPEN = 0;
     }
 }
 
@@ -475,12 +475,12 @@ static void SYSTEM_APP(void){
     ds(280, 340, ub, CTXT, 0, 1);
 }
 
-static void WINDAI_ASSISTANT(void){
+static void KEAI_ASSISTANT(void){
     if(!AI_OPEN) return;
     i32 aw = 500, ah = 200;
     i32 ax = ((i32)SW - aw) / 2, ay = ((i32)SH - ah) / 2;
-    DRAW_WINDOW(ax, ay, aw, ah, "WINDAI", BG_BASE);
-    ds(ax + 20, ay + 80, "WINDAI henuz bagli degil.", CTXT, 0, 1);
+    DRAW_WINDOW(ax, ay, aw, ah, "KEAI", BG_BASE);
+    ds(ax + 20, ay + 80, "KEAI henuz bagli degil.", CTXT, 0, 1);
     ds(ax + 20, ay + 110, "Yapay zeka modeli eklenmedi; bu pencere su an bos.", CGY, 0, 1);
 }
 
@@ -2168,7 +2168,7 @@ static void TERMINAL_APP(void){
             if(CY > (i32)SH - ch) CY = (i32)SH - ch;
         } else CD = 0;
     }
-    DRAW_WINDOW(cx, cy, cw, ch, "WIND-TERM (LINUX TERMINAL)", SAFE_BLK);
+    DRAW_WINDOW(cx, cy, cw, ch, "KERNELIA-TERM (LINUX TERMINAL)", SAFE_BLK);
     if(CLK(cx + 14, cy + 11, 12, 12)){ TERM_OPEN = 0; return; }
     if(MLB && !PMLB && HOV(cx, cy, cw, ch)) FOCUS = 1;
 
@@ -2588,7 +2588,7 @@ static const SpEntry SP_APPS[] = {
     { "YILAN OYUNU",      "yilan snake oyun game",         "UYGULAMA" },
     { "TARAYICI",         "tarayici browser web internet", "UYGULAMA" },
     { "GOREV YONETICISI", "gorev task manager",            "UYGULAMA" },
-    { "WINDAI",           "ai asistan yapay zeka",         "UYGULAMA" },
+    { "KEAI",           "ai asistan yapay zeka",         "UYGULAMA" },
     { "SISTEM AYARLARI",  "sistem ayar settings",          "AYAR" },
     { "EKRAN AYARLARI",   "ekran ayar display settings",   "AYAR" },
 };
@@ -2852,10 +2852,10 @@ static void DESKTOP(void){
 
     /* Kutucuk isimleri (her kutucugun altinda) */
     static const i32 DOCK_X[11] = {15, 80, 145, 210, 275, 340, 405, 470, 535, 600, 665};
-    static const char *DOCK_NM[11] = {"BASLA", "DOSYA", "TERM", "WINDAI", "AYAR", "GOREV", "MUZIK", "MIKU", "NOT", "YILAN", "WEB"};
+    static const char *DOCK_NM[11] = {"BASLA", "DOSYA", "TERM", "KEAI", "AYAR", "GOREV", "MUZIK", "MIKU", "NOT", "YILAN", "WEB"};
     for(int di = 0; di < 11; di++) dock_label(dock_x + DOCK_X[di] + 22, dock_y + 60, DOCK_NM[di]);
 
-    FILEMGR(); TERMINAL_APP(); TASKMGR_APP(); SYSTEM_APP(); DISPLAY_APP(); WINDAI_ASSISTANT();
+    FILEMGR(); TERMINAL_APP(); TASKMGR_APP(); SYSTEM_APP(); DISPLAY_APP(); KEAI_ASSISTANT();
     MUSIC_APP(); MIKU_APP(); NOTES_APP(); SNAKE_APP(); BROWSER_APP();
     START_MENU(); SPOTLIGHT_SEARCH();
 
