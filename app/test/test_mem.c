@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "../heap.c"
 #include "../mem.c"
 
 static int fails = 0, oks = 0;
