@@ -1,5 +1,5 @@
 /*
- * WindOS - kernel.c  v18.1 (hizli surum)
+ * KerneliaOS - kernel.c  v18.1 (hizli surum)
  * Gelistirici: Claude Efe-Elite-Dev  |  Asistan: Claude
  *
  * v18.0'a gore degisiklikler:
@@ -42,7 +42,7 @@ static int  SETUP_DONE = 0;
 static char SETUP_BUF[24];
 static int  SETUP_LEN = 0;
 static char USER_NAME[24] = "kullanici";
-static char PROMPT_STR[48] = "kullanici@WINDOS:~$ ";
+static char PROMPT_STR[48] = "kullanici@KERNELIAOS:~$ ";
 static int ANIM_PREV = 0;                /* onceki karede animasyon vardi */
 static u32 SYS_RAM_MB = 0;
 
@@ -464,7 +464,7 @@ static void DISPLAY_APP(void){
 static void SYSTEM_APP(void){
     if(!SYS_OPEN) return;
     DRAW_WINDOW(250, 150, 500, 300, "SISTEM BILGISI", PAN_BG);
-    ds(280, 200, "ISLETIM SISTEMI: WINDOS 18.1", WIN_BLUE, 0, 1);
+    ds(280, 200, "ISLETIM SISTEMI: KERNELIAOS 18.1", WIN_BLUE, 0, 1);
     ds(280, 230, "MIMARI: X86 (32 BIT)", CTXT, 0, 1);
     char buf[64]; kcpy(buf, "FIZIKSEL RAM: ");
     if(SYS_RAM_MB){ itoa((int)SYS_RAM_MB, buf + klen(buf)); kcpy(buf + klen(buf), " MB"); }
@@ -2110,7 +2110,7 @@ static void term_exec(void){
     if(c == 0) return;
 
     if(str_eq(cmd, "help")){ tl_add("KOMUTLAR: help ver mem echo clear time muzik miku not snake web exit lspci"); tl_add("AG: ping [ip]  (ornek: ping 10.0.2.2)"); tl_add("SES: ses [hz]  (ornek: ses 440)"); tl_add("WIND: wind DOSYA  (ornek: wind HELLO.WIND)"); tl_add("EXE: exe DOSYA  (ornek: exe PE_HELLO.EXE)"); tl_add("KUR: kur [DOSYA]  uygulamalar  (ornek: kur PE_HELLO.EXE)"); tl_add("Kurulu programi adiyla calistir (ornek: pe_hello)"); tl_add("GUVENLIK: guvenlik [ac|kapa|engelle IP|kaldir IP|izin PORT|liste]"); tl_add("HTTP: http host[:port][/yol]  (ornek: http example.com/)"); tl_add("DNS: dns ad [sunucu]  (ornek: dns example.com)"); tl_add("GOREV: gorev  (gorev sayisi, arka plan sayaci, bellek)"); }
-    else if(str_eq(cmd, "ver"))   tl_add("WindOS 18.1 (x86, 32-bit)");
+    else if(str_eq(cmd, "ver"))   tl_add("KerneliaOS 18.1 (x86, 32-bit)");
     else if(str_eq(cmd, "mem")){
         char b[TL_W]; kcpy(b, "FIZIKSEL RAM (MULTIBOOT): ");
         if(SYS_RAM_MB){ itoa((int)SYS_RAM_MB, b + klen(b)); kcpy(b + klen(b), " MB"); }
@@ -2152,7 +2152,7 @@ static void term_key(u8 c){
 }
 
 static void term_init(void){
-    tl_add("WindOS 18.1. 'help' yazip Enter'a bas.");
+    tl_add("KerneliaOS 18.1. 'help' yazip Enter'a bas.");
 }
 
 static void TERMINAL_APP(void){
@@ -2510,7 +2510,7 @@ static void BROWSER_APP(void){
 
     rr(wx + 20, wy + 92, ww - 40, wh - 112, 10, PAN_BG);
     if(BR_PAGE == 0){
-        ds(wx + 40, wy + 115, "WINDOS TARAYICI", CW, 0, 1);
+        ds(wx + 40, wy + 115, "KERNELIAOS TARAYICI", CW, 0, 1);
         ds(wx + 40, wy + 135, "Sayfa adresi yazin (ornek: www.youtube.com) ve Enter'a basin:", CGY, 0, 1);
         ds(wx + 40, wy + 155, "ornek: 10.0.2.2:8080/index.html", CTXT, 0, 1);
         ds(wx + 40, wy + 185, "Yerel ayarlar icin 'about' yazin.", CGY, 0, 1);
@@ -2567,7 +2567,7 @@ static void BROWSER_APP(void){
     }
     else {
         ds(wx + 40, wy + 115, "HAKKINDA", CW, 0, 1);
-        ds(wx + 40, wy + 135, "WindOS 18.1", CTXT, 0, 1);
+        ds(wx + 40, wy + 135, "KerneliaOS 18.1", CTXT, 0, 1);
         ds(wx + 40, wy + 155, "Sayfalar host'taki Chromium ile acilir (koprü).", CGY, 0, 1);
         ds(wx + 40, wy + 171, "Ok tuslari ile sayfayi kaydirin.", CGY, 0, 1);
     }
@@ -2743,7 +2743,7 @@ static void setup_finish(void){
         for(int i = 0; i < SETUP_LEN; i++) USER_NAME[i] = SETUP_BUF[i];
         USER_NAME[SETUP_LEN] = 0;
     }
-    app_str(PROMPT_STR, USER_NAME, "@WINDOS:~$ ");
+    app_str(PROMPT_STR, USER_NAME, "@KERNELIAOS:~$ ");
     SETUP_DONE = 1;
     DIRTY = 1;
 }
@@ -2760,7 +2760,7 @@ static void setup_key(u8 c){
 static void SETUP_SCREEN(void){
     i32 cx = (i32)SW / 2, cy = (i32)SH / 2;
     fr(0, 0, (i32)SW, (i32)SH, BG_BASE);
-    dsc(0, cy - 110, (i32)SW, "WINDOS KURULUM", CW, 0, 2);
+    dsc(0, cy - 110, (i32)SW, "KERNELIAOS KURULUM", CW, 0, 2);
     dsc(0, cy - 40, (i32)SW, "Kullanici adinizi girin:", CGY, 0, 1);
     rrg(cx - 180, cy, 360, 36, 8, PAN_BG);
     rb(cx - 180, cy, 360, 36, WIN_BLUE, 2);
@@ -2784,7 +2784,7 @@ static void on_key(u8 c){
     if(FOCUS == 4 && BR_OPEN){ br_key(c); return; }
 }
 
-/* WindOS logosu: mavi yuvarlak kare icinde 4 beyaz parca (x,y sol ust, s kenar) */
+/* KerneliaOS logosu: mavi yuvarlak kare icinde 4 beyaz parca (x,y sol ust, s kenar) */
 static void logo_mark(i32 x, i32 y, i32 s){
     rr(x, y, s, s, s / 4, WIN_BLUE);
     i32 g = s / 8; if(g < 1) g = 1;
@@ -2807,7 +2807,7 @@ static void DESKTOP(void){
     /* UST CUBUK */
     frg(0, 0, (i32)SW, 25, PAN_BG);
     logo_mark(12, 5, 16);
-    ds(34, 8, "WINDOS", CTXT, 0, 1);
+    ds(34, 8, "KERNELIAOS", CTXT, 0, 1);
     /* Arama simgesi: Spotlight'i acar/kapatir */
     disc((i32)SW - 212, 10, 5, CW);
     disc((i32)SW - 212, 10, 3, PAN_BG);
@@ -2865,7 +2865,7 @@ static void DESKTOP(void){
 static void BOOT_SCREEN(void){
     fr(0, 0, (i32)SW, (i32)SH, CK);
     logo_mark(((i32)SW - 72) / 2, (i32)SH / 2 - 130, 72);
-    dsc(0, (i32)SH / 2 - 8, (i32)SW, "WINDOS", CW, CK, 2);
+    dsc(0, (i32)SH / 2 - 8, (i32)SW, "KERNELIAOS", CW, CK, 2);
     dsc(0, (i32)SH / 2 + 30, (i32)SW, "Yukleniyor...", CGY, CK, 1);
     AI_TIMER++;
     if(AI_TIMER >= 90){ AI_BOOT_PHASE = 2; DIRTY = 1; }   /* masaustu bu karede cizilsin */
@@ -2962,7 +2962,7 @@ void kernel_main(multiboot_info_t *mbi){
     /* Lineer grafik modu yoksa metin modunda hata goster */
     if(!(mbi->flags & (1u << 12)) || mbi->framebuffer_type != 1 || !FB || SW == 0 || (BPP != 2 && BPP != 3 && BPP != 4)){
         volatile u16 *vga = (volatile u16*)0xB8000;
-        const char *msg = "WINDOS: LINEER GRAFIK MODU ALINAMADI (gfxpayload kontrol et)";
+        const char *msg = "KERNELIAOS: LINEER GRAFIK MODU ALINAMADI (gfxpayload kontrol et)";
         for(u32 i = 0; i < 80 * 25; i++) vga[i] = 0x0720;
         for(u32 i = 0; msg[i] && i < 80; i++) vga[i] = (u16)(0x0C00 | (u8)msg[i]);
         while(1) __asm__ volatile("cli; hlt");

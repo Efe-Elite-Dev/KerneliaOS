@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""WindOS Chromium koprusu (host tarafi).
+"""KerneliaOS Chromium koprusu (host tarafi).
 
-WindOS, QEMU'nun user-mode agi uzerinden 10.0.2.2:8088 adresine baglanir.
+KerneliaOS, QEMU'nun user-mode agi uzerinden 10.0.2.2:8088 adresine baglanir.
 Bu servis istenen sayfayi host makinedeki Chromium ile acar ve sayfanin
 ekran goruntusunu 24-bit BMP olarak geri yollar. Boylece JavaScript ile
 calisan siteler (ornegin YouTube) gorunur ve DNS cozumlemesi host tarafinda
@@ -15,9 +15,9 @@ Kurulum (bir kez):
 Calistirma:
     python tools/chromium_bridge.py              (varsayilan 127.0.0.1:8088, gorunur Chromium penceresi)
     python tools/chromium_bridge.py --headless   (pencere acmadan; ses calmaz)
-    python tools/chromium_bridge.py --port 9000  (WindOS tarafinda BR_PORT da degismeli)
+    python tools/chromium_bridge.py --port 9000  (KerneliaOS tarafinda BR_PORT da degismeli)
 
-Gorunur Chromium, sesi bilgisayarin hoparlorunden calar; WindOS sadece goruntuyu alir.
+Gorunur Chromium, sesi bilgisayarin hoparlorunden calar; KerneliaOS sadece goruntuyu alir.
 
 HTTP protokolu (HTTP/1.0):
     GET /act?a=go&u=<adres>&w=<px>&h=<px>        adresi ac
@@ -50,7 +50,7 @@ def clamp(v, lo, hi):
 
 
 def normalize(url):
-    """Sema yoksa http:// ekler; WindOS'un 10.0.2.2 adresini host loopback'ine cevirir."""
+    """Sema yoksa http:// ekler; KerneliaOS'un 10.0.2.2 adresini host loopback'ine cevirir."""
     url = url.strip()
     if not re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", url):
         url = "http://" + url
@@ -63,7 +63,7 @@ def normalize(url):
 
 
 class Session:
-    """Tek bir Chromium sayfasi; WindOS'un tarayici penceresiyle eslesir."""
+    """Tek bir Chromium sayfasi; KerneliaOS'un tarayici penceresiyle eslesir."""
 
     def __init__(self, headless=False):
         self._pw = sync_playwright().start()
@@ -165,7 +165,7 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 raise ValueError("bilinmeyen islem: " + action)
             body = s.bmp()
-        except Exception as exc:  # Playwright ve ayristirma hatalari WindOS'a metin olarak gider
+        except Exception as exc:  # Playwright ve ayristirma hatalari KerneliaOS'a metin olarak gider
             msg = ("HATA: " + str(exc).splitlines()[0] if str(exc) else "HATA").encode("utf-8", "replace")
             return self._send(502, "text/plain; charset=utf-8", msg)
         url_hdr = s.url.encode("ascii", "replace").decode("ascii")[:200]
@@ -173,7 +173,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="WindOS Chromium koprusu")
+    ap = argparse.ArgumentParser(description="KerneliaOS Chromium koprusu")
     ap.add_argument("--port", type=int, default=8088)
     ap.add_argument("--bind", default="127.0.0.1")
     ap.add_argument("--headless", action="store_true",
@@ -182,8 +182,8 @@ def main():
 
     Handler.session = Session(headless=args.headless)
     server = HTTPServer((args.bind, args.port), Handler)
-    print(f"WindOS Chromium koprusu: {args.bind}:{args.port} "
-          f"(WindOS icinden 10.0.2.2:{args.port}). Durdurmak icin Ctrl+C.")
+    print(f"KerneliaOS Chromium koprusu: {args.bind}:{args.port} "
+          f"(KerneliaOS icinden 10.0.2.2:{args.port}). Durdurmak icin Ctrl+C.")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

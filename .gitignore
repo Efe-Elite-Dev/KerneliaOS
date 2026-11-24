@@ -6,8 +6,8 @@ kernel.o
 boot.o
 iso/
 isodir/
-windos.iso
-WindOS-Quantum.iso
+kerneliaos.iso
+KerneliaOS-Quantum.iso
 # buyuk/yerel binary dosyalar
 *.exe
 # hazir ornek derlemeler (disk imajina eklenir)

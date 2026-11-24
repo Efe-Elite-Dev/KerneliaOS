@@ -1,4 +1,4 @@
-/* WindOS kullanici kutuphanesi uygulamasi. Bkz. ulib.h.
+/* KerneliaOS kullanici kutuphanesi uygulamasi. Bkz. ulib.h.
    Derleme (build_user.py): -nostdlib -fno-builtin -fno-tree-loop-distribute-patterns
    (bellek fonksiyonlarinin kendi kendini cagirmasini onler). */
 #include "../userabi.h"

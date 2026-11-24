@@ -1,4 +1,4 @@
-/* WindOS PE32 (i386) yukleyici. Bkz. pe.c
+/* KerneliaOS PE32 (i386) yukleyici. Bkz. pe.c
    Kapsam: MZ/PE basligi, bolumler, base relocation (HIGHLOW), import tablosu.
    Kernel bagimliligi yok; import cozumu bir geri cagirimla yapilir. */
 #ifndef PE_H

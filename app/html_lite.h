@@ -1,4 +1,4 @@
-/* WindOS tarayici - HTML ayristirici (1. asama).
+/* KerneliaOS tarayici - HTML ayristirici (1. asama).
    libc gerektirmez: kernel'e de, host uzerindeki test programina da baglanabilir.
 
    Cikti: duz metin + parcalar (run). Her parca bir stil tasir (normal, baslik

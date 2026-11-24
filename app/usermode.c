@@ -1,4 +1,4 @@
-/* WindOS kullanici modu (ring 3): GDT + TSS, int 0x80 sistem cagrilari, .exe programinin
+/* KerneliaOS kullanici modu (ring 3): GDT + TSS, int 0x80 sistem cagrilari, .exe programinin
    ayri bir adres uzayinda (UT_* adresleri) calistirilmasi, kullanici hatalarinda programin
    sonlandirilmasi (cekirdek cokmez).
    kernel.c icinde include edilir. Once sunlar tanimli olmali: TICKS, idt_gate, IDT, PG_* ve

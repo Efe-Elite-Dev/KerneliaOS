@@ -1,4 +1,4 @@
-/* WindOS DNS (RFC 1035) yardimcilari: sorgu olusturma ve yanit ayristirma.
+/* KerneliaOS DNS (RFC 1035) yardimcilari: sorgu olusturma ve yanit ayristirma.
    Saf fonksiyonlar (donanim yok); kernel.c ve host testi (app/test/test_dns.c) kullanir.
    Kapsam: tek soru, A kaydi (IPv4), isaretciler (sikistirma) desteklenir. */
 #ifndef WIND_DNS_C

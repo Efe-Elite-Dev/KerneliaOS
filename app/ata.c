@@ -1,4 +1,4 @@
-/* WindOS ATA PIO surucusu. Bkz. ata.h.
+/* KerneliaOS ATA PIO surucusu. Bkz. ata.h.
    UYARI: gercek donanimda test edilmedi; QEMU'da -hda ile okuma ve yazma denenir. */
 #include "ata.h"
 

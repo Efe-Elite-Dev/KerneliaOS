@@ -1,4 +1,4 @@
-/* WindOS .wind ayristiricisi. Bkz. wind.h */
+/* KerneliaOS .wind ayristiricisi. Bkz. wind.h */
 #include "wind.h"
 
 static unsigned wind_rd16(const unsigned char *p){ return p[0] | ((unsigned)p[1] << 8); }

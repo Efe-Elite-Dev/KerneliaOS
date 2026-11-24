@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""QEMU icin WindOS disk imaji: FAT16, kokte HELLO.TXT, SUB/..., HELLO.WIND, PE_HELLO.EXE.
+"""QEMU icin KerneliaOS disk imaji: FAT16, kokte HELLO.TXT, SUB/..., HELLO.WIND, PE_HELLO.EXE.
 
 Kullanim: python3 app/test/make_disk.py <cikti_dosyasi.img>
 (HELLO.WIN once app/samples/build_samples.py ile uretilir; betik bunu kendi

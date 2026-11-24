@@ -191,7 +191,7 @@ def build(kind, extra=None, bad_sum=(), lfn_dir=False):
     # Boot sektoru (BPB): fat.c bu alanlari okur
     bs = bytearray(bps)
     bs[0:3] = b"\xEB\x3C\x90"
-    bs[3:11] = b"WINDOS  "
+    bs[3:11] = b"KERNELIAOS  "
     struct.pack_into("<H", bs, 11, bps)
     bs[13] = spc
     struct.pack_into("<H", bs, 14, reserved)

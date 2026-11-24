@@ -1,6 +1,6 @@
-# WindOS Tarayıcı (app/)
+# KerneliaOS Tarayıcı (app/)
 
-WindOS'un kendi tarayıcısı. Hedef: önce basit HTML sayfalarını WindOS içinde göstermek, sonra adım adım daha modern web'e yaklaşmak.
+KerneliaOS'un kendi tarayıcısı. Hedef: önce basit HTML sayfalarını KerneliaOS içinde göstermek, sonra adım adım daha modern web'e yaklaşmak.
 
 ## Aşamalar
 

@@ -1,4 +1,4 @@
-/* WindOS seri port (COM1, 0x3F8): gunluk ve test ciktisi. QEMU'da -serial ile yakalanir.
+/* KerneliaOS seri port (COM1, 0x3F8): gunluk ve test ciktisi. QEMU'da -serial ile yakalanir.
    kernel.c icinde include edilir; inb/outb once tanimli olmali.
    Ayrica QEMU isa-debug-exit (port 0xF4): test calistiricisinin cikis kodunu okumasi icin. */
 #ifndef WIND_SERIAL_C

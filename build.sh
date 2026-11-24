@@ -18,10 +18,10 @@ echo "[4b] Disk imaji (programlar) ISO'ya ekleniyor..."
 python3 app/test/make_disk.py iso/boot/disk.img
 
 echo "[5] ISO üretiliyor..."
-grub-mkrescue -o windos.iso iso
+grub-mkrescue -o kerneliaos.iso iso
 
 echo "[6] Temizleniyor..."
 rm -rf boot.o kernel.o kernel.bin iso
 
 echo ""
-echo "=== BASARILI: windos.iso hazir ==="
+echo "=== BASARILI: kerneliaos.iso hazir ==="
