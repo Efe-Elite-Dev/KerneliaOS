@@ -39,6 +39,7 @@ test:
 	bash tools/qemu_test.sh
 	gcc -std=c99 -Wall -Wextra -Werror -Wno-unused-function -o test_mem app/test/test_mem.c && ./test_mem
 	gcc -std=c99 -Wall -Wextra -Werror -Wno-unused-function -o test_dns app/test/test_dns.c && ./test_dns
+	gcc -std=c99 -Wall -Wextra -Werror -Wno-unused-function -o test_crypto app/test/test_crypto.c && ./test_crypto
 
 clean:
 	rm -rf boot.o kernel.o kernel.bin iso kerneliaos.iso
