@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""QEMU icin WindOS disk imaji: FAT16, kokte HELLO.TXT, SUB/..., HELLO.WIND, PE_HELLO.EXE.
+"""QEMU icin KerneliaOS disk imaji: FAT16, kokte HELLO.TXT, SUB/..., HELLO.WIND, PE_HELLO.EXE.
 
 Kullanim: python3 app/test/make_disk.py <cikti_dosyasi.img>
 (HELLO.WIN once app/samples/build_samples.py ile uretilir; betik bunu kendi
@@ -28,20 +28,16 @@ def main():
         with open(os.path.join(tmp, "HELLO.WIN"), "rb") as f:
             wind = f.read()
     files = {"HELLO.WIND": wind}
-    # PE ornegi: depodaki hazir derleme (MinGW gerekmez); yoksa derlemeyi dene
-    prebuilt = os.path.join(ROOT, "app", "samples", "prebuilt", "PE_HELLO.EXE")
-    if os.path.exists(prebuilt):
-        with open(prebuilt, "rb") as f:
-            files["PE_HELLO.EXE"] = f.read()
-    else:
-        try:
-            with tempfile.TemporaryDirectory() as tmp:
-                subprocess.run([sys.executable, os.path.join(ROOT, "app", "samples", "build_pe.py"), tmp],
-                               check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                with open(os.path.join(tmp, "PE_HELLO.EXE"), "rb") as f:
-                    files["PE_HELLO.EXE"] = f.read()
-        except (OSError, subprocess.CalledProcessError):
-            print("uyari: PE_HELLO.EXE bulunamadi ve derlenemedi; disk imajina eklenmedi")
+    # Hazir derlemeler (depoda): PE_HELLO.EXE, ULIB_HELLO.EXE, FAULT_TEST.EXE
+    # Eksik olan bir dosya icin uyari verilir; ornek derlemeler app/samples/build_*.py ile yeniden uretilir.
+    prebuilt_dir = os.path.join(ROOT, "app", "samples", "prebuilt")
+    for name in ("PE_HELLO.EXE", "ULIB_HELLO.EXE", "FAULT_TEST.EXE", "WIN_CONSOLE.EXE", "WIN_MISSING.EXE"):
+        path = os.path.join(prebuilt_dir, name)
+        if os.path.exists(path):
+            with open(path, "rb") as f:
+                files[name] = f.read()
+        else:
+            print("uyari: " + name + " app/samples/prebuilt altinda yok; disk imajina eklenmedi")
     data = make_fat_images.build("fat16", files)
     with open(out, "wb") as f:
         f.write(data)

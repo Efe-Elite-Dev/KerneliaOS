@@ -1,4 +1,4 @@
-/* WindOS heap ayiricisi (kmalloc / kfree). Cekirdek ve kullanici kutuphanesi (app/ulib)
+/* KerneliaOS heap ayiricisi (kmalloc / kfree). Cekirdek ve kullanici kutuphanesi (app/ulib)
    ortak kullanir; donanima bagli degildir. Tipler icin yalnizca unsigned kullanir.
    Kullanim: once heap_init(bellek, uzunluk), sonra kmalloc/kfree. */
 #ifndef WIND_HEAP_C

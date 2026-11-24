@@ -1,4 +1,4 @@
-/* WindOS .wind program formati (1. asama: ayristirici).
+/* KerneliaOS .wind program formati (1. asama: ayristirici).
 
    Duz, little-endian bir dosya. Basligi 20 bayt:
      0  "WIND"       sihirli sayi

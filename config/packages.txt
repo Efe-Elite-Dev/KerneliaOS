@@ -1,5 +1,5 @@
 # =============================================================================
-# Wind OS Çekirdek Paket Dağıtım Listesi (Sky OS Engine Core Manifest)
+# Kernelia OS Çekirdek Paket Dağıtım Listesi (Sky OS Engine Core Manifest)
 # =============================================================================
 
 # Temel Donanım ve Boot Katmanı

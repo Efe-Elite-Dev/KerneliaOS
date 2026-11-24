@@ -1,4 +1,4 @@
-/* WindOS kullanici kutuphanesi (mini libc). Programlar -nostdlib ile derlenir; bu kutuphane
+/* KerneliaOS kullanici kutuphanesi (mini libc). Programlar -nostdlib ile derlenir; bu kutuphane
    ihtiyac duyulan kucuk bir alt kumeyi saglar. Sistem cagrilari int 0x80 ile yapilir (userabi.h).
    Kullanim: program dosyasinda #include "../ulib/ulib.h" ve void _start(void) giris noktasi;
    program ul_exit ile bitmelidir. */

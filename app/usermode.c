@@ -1,4 +1,4 @@
-/* WindOS kullanici modu (ring 3): GDT + TSS, int 0x80 sistem cagrilari, .exe programinin
+/* KerneliaOS kullanici modu (ring 3): GDT + TSS, int 0x80 sistem cagrilari, .exe programinin
    ayri bir adres uzayinda (UT_* adresleri) calistirilmasi, kullanici hatalarinda programin
    sonlandirilmasi (cekirdek cokmez).
    kernel.c icinde include edilir. Once sunlar tanimli olmali: TICKS, idt_gate, IDT, PG_* ve
@@ -121,6 +121,8 @@ u32 sys_dispatch(u32 *fr){
     }
     case SYS_TICKS:
         return (u32)TICKS;
+    case SYS_LASTERR:
+        return 0;                                    /* hata kodu takibi henuz yok */
     default:
         return 0xFFFFFFFFu;
     }
@@ -183,6 +185,8 @@ static const struct { const char *name; u32 num; u32 argc; } SYSMAP[] = {
     { "GetStdHandle",   SYS_GETSTDHANDLE, 1 },
     { "WriteFile",      SYS_WRITE,        5 },
     { "GetTickCount",   SYS_TICKS,        0 },
+    { "WriteConsoleA",  SYS_WRITE,        5 },   /* ayni arguman duzeni: (h, buf, n, &yazilan, rezerv) */
+    { "GetLastError",   SYS_LASTERR,      0 },
 };
 
 static void stub_emit(u8 *s, u32 num, u32 argc){
@@ -216,6 +220,13 @@ static unsigned user_resolve(void *ctx, const char *dll, const char *name, unsig
         STUB_N++;
         return addr;
     }
+    /* Desteklenmeyen API: programin neden yuklenmedigini ekrana yaz (kullaniciya acik hata) */
+    const char *pre = "EKSIK API: ";
+    for(const char *c = pre; *c; c++) exe_putc(*c);
+    for(const char *c = dll; *c; c++) exe_putc(*c);
+    exe_putc('!');
+    for(const char *c = name; *c; c++) exe_putc(*c);
+    exe_putc('\n');
     return 0;
 }
 

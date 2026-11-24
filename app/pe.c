@@ -1,4 +1,4 @@
-/* WindOS PE32 (i386) yukleyici. Bkz. pe.h
+/* KerneliaOS PE32 (i386) yukleyici. Bkz. pe.h
    Tum erisimler sinir kontrollu: bozuk bir dosya ya da tablo yukleyiciyi tasirmaz,
    sadece hata koduyla durur. */
 #include "pe.h"

@@ -1,4 +1,4 @@
-/* WindOS Turkce Q klavye: tarama kodu (PS/2 set 1) -> {normal, shift} karakter.
+/* KerneliaOS Turkce Q klavye: tarama kodu (PS/2 set 1) -> {normal, shift} karakter.
 
    Harf tuslari icin ikinci sutun buyuk harftir; Shift ve CapsLock birlikte
    harf buyuklugunu belirler. Noktalama tuslari icin ikinci sutun Shift'li hal.

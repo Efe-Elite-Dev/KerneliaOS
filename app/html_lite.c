@@ -1,4 +1,4 @@
-/* WindOS tarayici - HTML ayristirici (1. asama). Bkz. html_lite.h */
+/* KerneliaOS tarayici - HTML ayristirici (1. asama). Bkz. html_lite.h */
 #include "html_lite.h"
 
 typedef struct {

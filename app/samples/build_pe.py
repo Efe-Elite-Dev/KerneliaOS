@@ -3,7 +3,7 @@
 
 Kullanim: python3 app/samples/build_pe.py <cikti_klasoru>
 
-CRT baglanmaz (-nostdlib): yalnizca kernel32 import'lari olur, bu WindOS'un
+CRT baglanmaz (-nostdlib): yalnizca kernel32 import'lari olur, bu KerneliaOS'un
 desteklediği alt kumeyle eslesir. Relocation tablosu (.reloc) korunur; boylece
 yukleyicinin relocation yolu da test edilir."""
 import os

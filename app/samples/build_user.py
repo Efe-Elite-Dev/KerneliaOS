@@ -10,7 +10,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ULIB = os.path.join(HERE, "..", "ulib", "ulib.c")
-PROGS = [("ulib_hello.c", "ULIB_HELLO.EXE", True), ("fault_test.c", "FAULT_TEST.EXE", True)]
+PROGS = [("ulib_hello.c", "ULIB_HELLO.EXE", True), ("fault_test.c", "FAULT_TEST.EXE", True), ("win_console.c", "WIN_CONSOLE.EXE", False), ("win_missing.c", "WIN_MISSING.EXE", False)]
 
 
 def main():
@@ -26,6 +26,8 @@ def main():
                "-o", out, os.path.join(HERE, src)]
         if uses_ulib:
             cmd.append(ULIB)
+        else:
+            cmd.append("-lkernel32")   # Win32 programlari kernel32 import'u kullanir
         subprocess.run(cmd, check=True)
         print("yazildi:", out)
 

@@ -1,4 +1,4 @@
-/* WindOS zamanlayici: IRQ0 (PIT) kesmesinde baglam degistiren round-robin.
+/* KerneliaOS zamanlayici: IRQ0 (PIT) kesmesinde baglam degistiren round-robin.
    timer_stub (asm) butun genel yazmaclari yigina koyar, sched_tick'e yigin isaretcisini
    verir; donen yeni yigin isaretcisiyle popa/iret yapar. Gorev yigini kmalloc ile ayrilir.
    kernel.c icinde include edilir; TICKS, idt_gate, kmalloc/kfree (mem.c) once tanimli olmali. */

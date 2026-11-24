@@ -1,4 +1,4 @@
-/* WindOS FAT12/FAT16 surucu (MBR'siz ham birim). libc gerektirmez.
+/* KerneliaOS FAT12/FAT16 surucu (MBR'siz ham birim). libc gerektirmez.
    Disk erisimi geri cagirimlarla yapilir; boylece ATA surucusu, RAM disk ya da
    host dosyasi ayni kodla kullanilabilir.
 

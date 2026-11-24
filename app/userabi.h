@@ -1,4 +1,4 @@
-/* WindOS kullanici alani sozlesmesi: cekirdek (usermode.c) ve kullanici kutuphanesi (ulib)
+/* KerneliaOS kullanici alani sozlesmesi: cekirdek (usermode.c) ve kullanici kutuphanesi (ulib)
    ortak kullanir. Sistem cagrisi: eax = numara; arglar ebx, ecx, edx, esi, edi; donus eax.
    Kernel32 importlari bu cagrilara bagli stub'lar uzerinden gider (bkz. usermode.c). */
 #ifndef WIND_USERABI_H
@@ -18,5 +18,6 @@
 #define SYS_GETSTDHANDLE  2         /* ebx = std id; donus: tutamac */
 #define SYS_WRITE         3         /* ebx = tutamac, ecx = tampon, edx = uzunluk, esi = yazilan (ya da 0) */
 #define SYS_TICKS         4         /* donus: zamanlayici tick sayisi */
+#define SYS_LASTERR       5         /* donus: son hata kodu (su an hep 0) */
 
 #endif

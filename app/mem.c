@@ -1,4 +1,4 @@
-/* WindOS fiziksel bellek ayiricisi: 4 KB cerceveler, bitmap (1 = kullanimda).
+/* KerneliaOS fiziksel bellek ayiricisi: 4 KB cerceveler, bitmap (1 = kullanimda).
    Heap (kmalloc/kfree) app/heap.c'de. Donanima bagli degildir; host testi app/test/test_mem.c. */
 #ifndef WIND_MEM_C
 #define WIND_MEM_C

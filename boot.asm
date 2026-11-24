@@ -1,5 +1,5 @@
 ; =========================================================
-; Wind OS / Sky-Core-OS  -  boot.asm
+; Kernelia OS / KerneliaOS  -  boot.asm
 ; Multiboot 1 + VBE Linear Framebuffer (1024x768x32)
 ; =========================================================
 
