@@ -1,6 +1,6 @@
-/* WindOS PE ornegi: kernel32'den yalnizca GetStdHandle, WriteFile ve ExitProcess kullanir.
+/* KerneliaOS PE ornegi: kernel32'den yalnizca GetStdHandle, WriteFile ve ExitProcess kullanir.
    CRT yok; giris noktasi _start (i386 MinGW'de sembol __start). Derleme: app/samples/build_pe.py (i686-w64-mingw32-gcc).
-   Kaynak Windows'ta da derlenebilir ama WindOS yalnizca bu API'leri saglar. */
+   Kaynak Windows'ta da derlenebilir ama KerneliaOS yalnizca bu API'leri saglar. */
 __declspec(dllimport) void *__stdcall GetStdHandle(unsigned long nStdHandle);
 __declspec(dllimport) int __stdcall WriteFile(void *h, const void *buf, unsigned long n,
                                               unsigned long *written, void *ov);

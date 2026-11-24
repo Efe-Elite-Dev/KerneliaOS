@@ -1,4 +1,4 @@
-/* WindOS sayfalama (32-bit, 4 KB sayfalar) ve istisna isleyicileri.
+/* KerneliaOS sayfalama (32-bit, 4 KB sayfalar) ve istisna isleyicileri.
    kernel.c icinde include edilir; once sunlar tanimli olmali: u32/u16/u8 tipleri, idt_gate,
    IDT, hex_str, app_str, dec_str, fr, ds, swap_buffers, SW, SH, PITCH, CW, tl_add.
    mem.c'den once degil, sonra include edilir (frame_alloc, heap_init, kmalloc). */

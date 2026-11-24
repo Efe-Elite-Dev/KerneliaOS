@@ -1,9 +1,9 @@
-# WindOS geliştirme rehberi
+# KerneliaOS geliştirme rehberi
 
 Bu belge çekirdeği nasıl geliştireceğimizi anlatır. Her değişiklik bu adımlardan geçmeli.
 
 ## 1. Derle ve test et
-- `make` → `kernel.bin`, `make iso` → `windos.iso`.
+- `make` → `kernel.bin`, `make iso` → `kerneliaos.iso`.
 - `make test` → QEMU senaryoları (`tools/qemu_test.sh`) ve host testleri (`test_mem`, `test_dns`).
 - Saf mantık (ayırıcı, DNS, FAT) için host testi yaz. Donanım davranışı için `WIND_TEST` ve QEMU testi yaz.
 

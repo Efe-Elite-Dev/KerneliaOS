@@ -1,5 +1,5 @@
 # =============================================================================
-# Wind OS - Virtual Machine Patch Configuration (bilgi amaçlı)
+# Kernelia OS - Virtual Machine Patch Configuration (bilgi amaçlı)
 # NOT: UEFI desteği YOK. Sistem sadece BIOS + GRUB (Multiboot 1) ile açılır.
 # Asagidaki UEFI/EFI bolumu hicbir build adiminda kullanilmiyor.
 # =============================================================================

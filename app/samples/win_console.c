@@ -1,4 +1,4 @@
-/* WindOS Win32 uyum katmani v0 testi: yalnizca desteklenen konsol API'lerini kullanir.
+/* KerneliaOS Win32 uyum katmani v0 testi: yalnizca desteklenen konsol API'lerini kullanir.
    WriteConsoleA, GetLastError, GetStdHandle, ExitProcess. CRT yok. Derleme: app/samples/build_user.py */
 __declspec(dllimport) void *__stdcall GetStdHandle(unsigned long nStdHandle);
 __declspec(dllimport) int __stdcall WriteConsoleA(void *h, const void *buf, unsigned long n,

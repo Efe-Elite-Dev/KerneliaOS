@@ -1,4 +1,4 @@
-/* WindOS cekirdek ici testleri (yalnizca WIND_TEST derlemesinde include edilir).
+/* KerneliaOS cekirdek ici testleri (yalnizca WIND_TEST derlemesinde include edilir).
    Sonuclar seri porta yazilir; QEMU isa-debug-exit ile cikis kodu bildirilir:
      0 -> kod 1 (gecti)    1 -> kod 3 (basarisiz)    2 -> kod 5 (panik)
    Test calistiricisi: tools/qemu_test.sh

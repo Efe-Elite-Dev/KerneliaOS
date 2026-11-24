@@ -1,6 +1,6 @@
-# WindOS Yol Haritasi
+# KerneliaOS Yol Haritasi
 
-Bu dosya, WindOS'un bir sonraki adimlarini sirasiyla anlatir. Her adim bir oncekinin ustune kurulur.
+Bu dosya, KerneliaOS'un bir sonraki adimlarini sirasiyla anlatir. Her adim bir oncekinin ustune kurulur.
 Hedef mimari: once 32-bit x86 (mevcut), sonra 64-bit (x86-64). Uygulamalar icin kendi mini libc'miz olacak.
 
 ## Asama 1: Bellek yonetimi

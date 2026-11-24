@@ -1,4 +1,4 @@
-name: WindOS Quantum Engine CI/CD
+name: KerneliaOS Quantum Engine CI/CD
 
 # Workflow'un ne zaman çalışacağını belirliyoruz (Kodu pushladığında otomatik başlar)
 on:
@@ -55,27 +55,27 @@ jobs:
         
         # GRUB menü dosyasını otomatik oluşturuyoruz
         cat <<EOF > isodir/boot/grub/grub.cfg
-        menuentry "WindOS 18.1" {
+        menuentry "KerneliaOS 18.1" {
             multiboot /boot/kernel.bin
         }
         EOF
         
-        grub-mkrescue -o WindOS-Quantum.iso isodir
+        grub-mkrescue -o KerneliaOS-Quantum.iso isodir
 
     - name: 🚀 Derlenen Kusursuz İşletim Sistemini Yükle (Artifact)
       uses: actions/upload-artifact@v4 # GitHub'ın yeni V4 altyapısına güncellendi!
       with:
-        name: WindOS-Quantum-ISO
-        path: WindOS-Quantum.iso
+        name: KerneliaOS-Quantum-ISO
+        path: KerneliaOS-Quantum.iso
 
     - name: 💾 Test disk imajı oluştur (FAT16 + HELLO.WIND)
-      run: python3 app/test/make_disk.py WindOS-Disk.img
+      run: python3 app/test/make_disk.py KerneliaOS-Disk.img
 
     - name: 💾 Disk imajını yükle (QEMU -hda ile denemek için)
       uses: actions/upload-artifact@v4
       with:
-        name: WindOS-Disk-IMG
-        path: WindOS-Disk.img
+        name: KerneliaOS-Disk-IMG
+        path: KerneliaOS-Disk.img
 
   release:
     name: 🏷️ Surum Yayinla (main veya etiket)
@@ -95,7 +95,7 @@ jobs:
     - name: 💿 Derlenen ISO'yu indir
       uses: actions/download-artifact@v4
       with:
-        name: WindOS-Quantum-ISO
+        name: KerneliaOS-Quantum-ISO
         path: release
 
     - name: 🚀 Surumu olustur veya guncelle (ISO + run.bat)
@@ -104,16 +104,16 @@ jobs:
       run: |
         if [ "$GITHUB_REF_TYPE" = "tag" ]; then
           TAG="$GITHUB_REF_NAME"
-          TITLE="WindOS $TAG"
+          TITLE="KerneliaOS $TAG"
         else
           # main'e her birlesmede ayni "latest-build" surumu yenilenir
           TAG="latest-build"
-          TITLE="WindOS son derleme (main)"
+          TITLE="KerneliaOS son derleme (main)"
           gh release delete "$TAG" --yes --cleanup-tag >/dev/null 2>&1 || true
         fi
         NOTES="ISO ve run.bat. Windows'ta ISO'yu run.bat dosyasinin uzerine surukleyin (QEMU gerekir). Kaynak: $GITHUB_SHA"
         if gh release view "$TAG" >/dev/null 2>&1; then
-          gh release upload "$TAG" release/WindOS-Quantum.iso run.bat --clobber
+          gh release upload "$TAG" release/KerneliaOS-Quantum.iso run.bat --clobber
         else
-          gh release create "$TAG" --target "$GITHUB_SHA" --title "$TITLE" --notes "$NOTES" release/WindOS-Quantum.iso run.bat
+          gh release create "$TAG" --target "$GITHUB_SHA" --title "$TITLE" --notes "$NOTES" release/KerneliaOS-Quantum.iso run.bat
         fi

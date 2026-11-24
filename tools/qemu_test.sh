@@ -1,5 +1,5 @@
 #!/bin/bash
-# WindOS QEMU test calistiricisi.
+# KerneliaOS QEMU test calistiricisi.
 # Her senaryo icin kerneli WIND_TEST bayragiyla derler, GRUB ISO'su olusturur, QEMU'da acar,
 # seri ciktiyi (COM1) ve isa-debug-exit cikis kodunu kontrol eder.
 #

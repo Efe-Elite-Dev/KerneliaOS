@@ -1,4 +1,4 @@
-/* WindOS kullanici alani sozlesmesi: cekirdek (usermode.c) ve kullanici kutuphanesi (ulib)
+/* KerneliaOS kullanici alani sozlesmesi: cekirdek (usermode.c) ve kullanici kutuphanesi (ulib)
    ortak kullanir. Sistem cagrisi: eax = numara; arglar ebx, ecx, edx, esi, edi; donus eax.
    Kernel32 importlari bu cagrilara bagli stub'lar uzerinden gider (bkz. usermode.c). */
 #ifndef WIND_USERABI_H

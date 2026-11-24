@@ -27,7 +27,7 @@ echo QEMU baslatiliyor...
 :: Kurulum: pip install playwright pillow, sonra python -m playwright install chromium
 set "BRIDGE=%~dp0tools\chromium_bridge.py"
 if exist "%BRIDGE%" (
-    where python >nul 2>nul && start "WindOS Chromium koprusu" /min python "%BRIDGE%"
+    where python >nul 2>nul && start "KerneliaOS Chromium koprusu" /min python "%BRIDGE%"
 )
 
 :: -nic user: QEMU NAT agi (misafir 10.0.2.15, ag gecidi 10.0.2.2, DNS 10.0.2.3)

@@ -1,4 +1,4 @@
-/* WindOS FAT12/FAT16 surucu: okuma, LFN'li dosya/klasor olusturma, listeleme. Bkz. fat.h */
+/* KerneliaOS FAT12/FAT16 surucu: okuma, LFN'li dosya/klasor olusturma, listeleme. Bkz. fat.h */
 #include "fat.h"
 
 #define FAT_EOC 0xFFFFFFFFu

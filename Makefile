@@ -1,6 +1,6 @@
-# WindOS - build (build.sh ve CI ile ayni adimlar)
+# KerneliaOS - build (build.sh ve CI ile ayni adimlar)
 #   make        -> kernel.bin
-#   make iso    -> windos.iso (grub-mkrescue gerekir)
+#   make iso    -> kerneliaos.iso (grub-mkrescue gerekir)
 #   make clean
 
 CC      = gcc
@@ -24,16 +24,16 @@ iso: kernel.bin grub.cfg
 	mkdir -p iso/boot/grub
 	cp kernel.bin iso/boot/kernel.bin
 	cp grub.cfg iso/boot/grub/grub.cfg
-	grub-mkrescue -o windos.iso iso
+	grub-mkrescue -o kerneliaos.iso iso
 	rm -rf iso
 
 run: iso
-	./run.sh windos.iso
+	./run.sh kerneliaos.iso
 
 # Hata ayiklama: QEMU 1234 portunda gdb bekler ve duraklatilmis baslar.
 #   Baska terminalde: gdb kernel.bin -ex 'target remote :1234' -ex 'break kernel_main' -ex continue
 debug: iso
-	qemu-system-i386 -cdrom windos.iso -m 256 -vga std -nic user,model=rtl8139 -serial stdio -s -S
+	qemu-system-i386 -cdrom kerneliaos.iso -m 256 -vga std -nic user,model=rtl8139 -serial stdio -s -S
 
 test: 
 	bash tools/qemu_test.sh
@@ -41,6 +41,6 @@ test:
 	gcc -std=c99 -Wall -Wextra -Werror -Wno-unused-function -o test_dns app/test/test_dns.c && ./test_dns
 
 clean:
-	rm -rf boot.o kernel.o kernel.bin iso windos.iso
+	rm -rf boot.o kernel.o kernel.bin iso kerneliaos.iso
 
 .PHONY: all iso run debug test clean

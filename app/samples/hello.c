@@ -1,4 +1,4 @@
-/* WindOS ornek .wind programi: ekranda yazi gosterir, bir tusa basinca cikar.
+/* KerneliaOS ornek .wind programi: ekranda yazi gosterir, bir tusa basinca cikar.
    Konuma bagimsiz olmali: global veri, dize sabiti ve mutlak adres kullanmaz;
    yalnizca api tablosunu ve yigini kullanir. Derleme: app/samples/build_samples.py */
 #include "../wind.h"

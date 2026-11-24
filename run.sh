@@ -1,8 +1,8 @@
 #!/bin/bash
-# WindOS'u QEMU'da acar. ISO yoksa once derler.
+# KerneliaOS'u QEMU'da acar. ISO yoksa once derler.
 # Kullanim: ./run.sh [iso-dosyasi]
 set -e
-ISO="${1:-windos.iso}"
+ISO="${1:-kerneliaos.iso}"
 if [ ! -f "$ISO" ]; then
     echo "[run] $ISO yok, derleniyor..."
     make iso
