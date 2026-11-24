@@ -1632,9 +1632,9 @@ static int open_in(fat_vol *v, const char *dir, const char *name, fat_file *f){
     return fat_open(v, path, f) == 0 && !f->is_dir;
 }
 
-/* k. aday ad: 0 = ad olarak, 1 = ad.EXE, 2 = ad.WIND (uzantisiz adlarda) */
+/* k. aday ad: 0 = ad olarak, 1 = ad.EXE, 2 = ad.WIND, 3 = ad.KAEI (uzantisiz adlarda) */
 static void cand_make(char *dst, const char *name, int k){
-    static const char *sfx[3] = { "", ".EXE", ".WIND" };
+    static const char *sfx[4] = { "", ".EXE", ".WIND", ".KAEI" };
     unsigned j = 0;
     for(unsigned i = 0; name[i] && j < PNAME_MAX - 8; i++) dst[j++] = name[i];
     for(unsigned i = 0; sfx[k][i] && j < PNAME_MAX - 1; i++) dst[j++] = sfx[k][i];
@@ -1642,9 +1642,9 @@ static void cand_make(char *dst, const char *name, int k){
 }
 
 /* Programi bulur. Sira: MVOL:PROGRAMS/ (kurulu), MVOL koku, SVOL koku. src_only: PROGRAMS atlanir.
-   Uzantisiz adda once ad, sonra .EXE ve .WIND denenir. Donus 1: bulundu (f, vol, cand doldurulur). */
+   Uzantisiz adda once ad, sonra .EXE, .WIND ve .KAEI denenir. Donus 1: bulundu (f, vol, cand doldurulur). */
 static int prog_lookup(const char *name, int src_only, fat_file *f, fat_vol **vol, char *cand){
-    int n = has_dot(name) ? 1 : 3;
+    int n = has_dot(name) ? 1 : 4;
     int mok = mvol_ready();
     int sok = (mok && !MVOL_RAM) ? svol_ready() : 0;
     for(int k = 0; k < n; k++){
@@ -1793,12 +1793,13 @@ static void tl_cat(char *b, const char *s){
     b[k] = 0;
 }
 
-/* .EXE ya da .WIND ile biten ad mi? (buyuk/kucuk harf farketmez) */
+/* .EXE, .WIND ya da .KAEI ile biten ad mi? (buyuk/kucuk harf farketmez) */
 static int prog_name_ok(const char *s){
     int n = 0;
     while(s[n]) n++;
     if(n >= 4 && exe_name_is(s + n - 4, ".exe")) return 1;
     if(n >= 5 && exe_name_is(s + n - 5, ".wind")) return 1;
+    if(n >= 5 && exe_name_is(s + n - 5, ".kaei")) return 1;
     return 0;
 }
 
@@ -1956,7 +1957,7 @@ static void fm_refresh(void){
 static void fm_act(void){
     if(FM_SEL < 0 || FM_SEL >= FM_N){ tl_add("DOSYA GEZGINI: ONCE BIR DOSYA SECIN"); return; }
     if(FM_DIR[FM_SEL] || !prog_name_ok(FM_NAME[FM_SEL])){
-        tl_add("DOSYA GEZGINI: BU DOSYA KURULAMAZ / CALISTIRILAMAZ (.exe ya da .wind gerekli)");
+        tl_add("DOSYA GEZGINI: BU DOSYA KURULAMAZ / CALISTIRILAMAZ (.exe, .wind ya da .kaei gerekli)");
         return;
     }
     if(FM_TAB == 0){
@@ -2109,7 +2110,7 @@ static void term_exec(void){
     const char *arg = &line[i];
     if(c == 0) return;
 
-    if(str_eq(cmd, "help")){ tl_add("KOMUTLAR: help ver mem echo clear time muzik miku not snake web exit lspci"); tl_add("AG: ping [ip]  (ornek: ping 10.0.2.2)"); tl_add("SES: ses [hz]  (ornek: ses 440)"); tl_add("WIND: wind DOSYA  (ornek: wind HELLO.WIND)"); tl_add("EXE: exe DOSYA  (ornek: exe PE_HELLO.EXE)"); tl_add("KUR: kur [DOSYA]  uygulamalar  (ornek: kur PE_HELLO.EXE)"); tl_add("Kurulu programi adiyla calistir (ornek: pe_hello)"); tl_add("GUVENLIK: guvenlik [ac|kapa|engelle IP|kaldir IP|izin PORT|liste]"); tl_add("HTTP: http host[:port][/yol]  (ornek: http example.com/)"); tl_add("DNS: dns ad [sunucu]  (ornek: dns example.com)"); tl_add("GOREV: gorev  (gorev sayisi, arka plan sayaci, bellek)"); }
+    if(str_eq(cmd, "help")){ tl_add("KOMUTLAR: help ver mem echo clear time muzik miku not snake web exit lspci"); tl_add("AG: ping [ip]  (ornek: ping 10.0.2.2)"); tl_add("SES: ses [hz]  (ornek: ses 440)"); tl_add("WIND: wind DOSYA  (.wind ya da .kaei; ornek: wind HELLO.KAEI)"); tl_add("EXE: exe DOSYA  (ornek: exe PE_HELLO.EXE)"); tl_add("KUR: kur [DOSYA]  uygulamalar  (ornek: kur PE_HELLO.EXE)"); tl_add("Kurulu programi adiyla calistir (ornek: pe_hello)"); tl_add("GUVENLIK: guvenlik [ac|kapa|engelle IP|kaldir IP|izin PORT|liste]"); tl_add("HTTP: http host[:port][/yol]  (ornek: http example.com/)"); tl_add("DNS: dns ad [sunucu]  (ornek: dns example.com)"); tl_add("GOREV: gorev  (gorev sayisi, arka plan sayaci, bellek)"); }
     else if(str_eq(cmd, "ver"))   tl_add("KerneliaOS 18.1 (x86, 32-bit)");
     else if(str_eq(cmd, "mem")){
         char b[TL_W]; kcpy(b, "FIZIKSEL RAM (MULTIBOOT): ");

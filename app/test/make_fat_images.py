@@ -47,12 +47,25 @@ def needs_lfn(name):
     return name != name.upper() or len(base) > 8 or len(ext) > 3 or " " in name
 
 
-def short_alias(name):
-    """Uzun ad icin 8.3 takma ad: ILK6~1.EXT (sadece test icin, sade bir kural)"""
+def short_alias(name, n=1):
+    """Uzun ad icin 8.3 takma ad: ILK6~N.EXT (sadece test icin, sade bir kural)"""
     base, ext = name.rsplit(".", 1) if "." in name else (name, "")
-    clean = "".join(c for c in base.upper() if c.isalnum())[:6] + "~1"
+    clean = "".join(c for c in base.upper() if c.isalnum())[:6] + "~%d" % n
     cext = "".join(c for c in ext.upper() if c.isalnum())[:3]
     return clean + ("." + cext if cext else "")
+
+
+def unique_alias(name, root):
+    """Kok dizinde (root: simdiye kadar yazilan giris baytlari) cakismayan takma ad.
+    Ayni onekli iki uzun ad (HELLO.WIND, HELLO.KAEI) ayni ~1 takma adini almasin."""
+    raw = bytes(root)
+    taken = {raw[i:i + 11] for i in range(0, len(raw) - 31, 32)
+             if raw[i] not in (0x00, 0xE5) and raw[i + 11] != 0x0F}
+    for n in range(1, 10):
+        alias = short_alias(name, n)
+        if name83(alias) not in taken:
+            return alias
+    raise ValueError("takma ad uretilemedi: " + name)
 
 
 def lfn_entries(longname, short11, bad_sum=False):
@@ -175,7 +188,7 @@ def build(kind, extra=None, bad_sum=(), lfn_dir=False):
         cs_x = alloc(len(data))
         write_clusters(cs_x, data)
         if needs_lfn(name):
-            alias = short_alias(name)
+            alias = unique_alias(name, root)
             short = name83(alias)
             root += lfn_entries(name, short, bad_sum=name in bad_sum)
             root += struct.pack("<11sB10sHHHI", short, 0x20, b"\0" * 10, 0, 0, cs_x[0], len(data))
@@ -191,7 +204,7 @@ def build(kind, extra=None, bad_sum=(), lfn_dir=False):
     # Boot sektoru (BPB): fat.c bu alanlari okur
     bs = bytearray(bps)
     bs[0:3] = b"\xEB\x3C\x90"
-    bs[3:11] = b"KERNELIAOS  "
+    bs[3:11] = b"KERNELIA"   # OEM adi: tam 8 bayt (dilim atamasi uzunlugu degistirmesin)
     struct.pack_into("<H", bs, 11, bps)
     bs[13] = spc
     struct.pack_into("<H", bs, 14, reserved)
