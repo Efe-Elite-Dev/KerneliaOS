@@ -15,11 +15,11 @@ Sistem, sıradan bir hobi projesi olmaktan çıkıp; kendi dosya sistemine, evre
 
 🔄 4D Ekran Düzeltici (Donanım Senkronizatörü): QEMU ve VirtualBox'ın FrameBuffer ayna/ters dönme hatalarını donanım seviyesinde sıfır kasmayla düzelten algoritma. (Klavye kısayolu: F)
 
-🧠 WindAI Entegrasyonu: Sistem geneline entegre edilmiş, yerel (offline) yapay zeka asistanı arayüzü. (Klavye kısayolu: Alt + A)
+🧠 KerneliaAI Entegrasyonu: Sistem geneline entegre edilmiş, yerel (offline) yapay zeka asistanı arayüzü. (Klavye kısayolu: Alt + A)
 
 💾 Dinamik Donanım Analizi: Multiboot üzerinden fiziksel RAM'i ve depolama limitlerini anlık okuma yeteneği.
 
-🌐 CloudBrowser & WindNot: Kendi wpk:// ağ protokolüyle çalışan bulut tarayıcı ve gömülü metin düzenleyici.
+🌐 CloudBrowser & KerneliaNot: Kendi wpk:// ağ protokolüyle çalışan bulut tarayıcı ve gömülü metin düzenleyici.
 
 🚀 Kurulum ve Derleme
 KerneliaOS, Freestanding ortamında GCC ile derlenmek üzere tasarlanmıştır.
@@ -52,11 +52,11 @@ It has evolved from a simple hobby project into a fully-fledged ecosystem featur
 
 🔄 4D Screen Fixer (Hardware Synchronizer): A zero-lag hardware-level algorithm that fixes FrameBuffer mirroring/flipping issues common in QEMU and VirtualBox. (Hotkey: F)
 
-🧠 WindAI Integration: A system-wide, locally simulated offline AI assistant interface. (Hotkey: Alt + A)
+🧠 KerneliaAI Integration: A system-wide, locally simulated offline AI assistant interface. (Hotkey: Alt + A)
 
 💾 Dynamic Hardware Analysis: Real-time physical RAM and storage limit detection via Multiboot.
 
-🌐 CloudBrowser & WindNot: A cloud browser operating on its own wpk:// network protocol and a built-in text editor.
+🌐 CloudBrowser & KerneliaNot: A cloud browser operating on its own wpk:// network protocol and a built-in text editor.
 
 🚀 Build Instructions
 KerneliaOS is designed to be compiled with GCC in a freestanding environment.
