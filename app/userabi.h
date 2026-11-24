@@ -18,5 +18,6 @@
 #define SYS_GETSTDHANDLE  2         /* ebx = std id; donus: tutamac */
 #define SYS_WRITE         3         /* ebx = tutamac, ecx = tampon, edx = uzunluk, esi = yazilan (ya da 0) */
 #define SYS_TICKS         4         /* donus: zamanlayici tick sayisi */
+#define SYS_LASTERR       5         /* donus: son hata kodu (su an hep 0) */
 
 #endif

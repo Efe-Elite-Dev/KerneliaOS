@@ -31,7 +31,7 @@ def main():
     # Hazir derlemeler (depoda): PE_HELLO.EXE, ULIB_HELLO.EXE, FAULT_TEST.EXE
     # Eksik olan bir dosya icin uyari verilir; ornek derlemeler app/samples/build_*.py ile yeniden uretilir.
     prebuilt_dir = os.path.join(ROOT, "app", "samples", "prebuilt")
-    for name in ("PE_HELLO.EXE", "ULIB_HELLO.EXE", "FAULT_TEST.EXE"):
+    for name in ("PE_HELLO.EXE", "ULIB_HELLO.EXE", "FAULT_TEST.EXE", "WIN_CONSOLE.EXE", "WIN_MISSING.EXE"):
         path = os.path.join(prebuilt_dir, name)
         if os.path.exists(path):
             with open(path, "rb") as f:
