@@ -685,6 +685,7 @@ static void SNAKE_APP(void){
 }
 
 static void tl_add(const char *s);
+static void sys_status(void);      /* app/sched.c */
 
 /* ---- PCI: yapilandirma alani (port 0xCF8 adres, 0xCFC veri) ---- */
 static inline void outl(u16 p, u32 v){ __asm__ volatile("outl %0,%1"::"a"(v),"Nd"(p)); }
@@ -2048,7 +2049,7 @@ static void term_exec(void){
     const char *arg = &line[i];
     if(c == 0) return;
 
-    if(str_eq(cmd, "help")){ tl_add("KOMUTLAR: help ver mem echo clear time muzik miku not snake web exit lspci"); tl_add("AG: ping [ip]  (ornek: ping 10.0.2.2)"); tl_add("SES: ses [hz]  (ornek: ses 440)"); tl_add("WIND: wind DOSYA  (ornek: wind HELLO.WIND)"); tl_add("EXE: exe DOSYA  (ornek: exe PE_HELLO.EXE)"); tl_add("KUR: kur [DOSYA]  uygulamalar  (ornek: kur PE_HELLO.EXE)"); tl_add("Kurulu programi adiyla calistir (ornek: pe_hello)"); tl_add("GUVENLIK: guvenlik [ac|kapa|engelle IP|kaldir IP|izin PORT|liste]"); tl_add("HTTP: http ip[:port][/yol]"); }
+    if(str_eq(cmd, "help")){ tl_add("KOMUTLAR: help ver mem echo clear time muzik miku not snake web exit lspci"); tl_add("AG: ping [ip]  (ornek: ping 10.0.2.2)"); tl_add("SES: ses [hz]  (ornek: ses 440)"); tl_add("WIND: wind DOSYA  (ornek: wind HELLO.WIND)"); tl_add("EXE: exe DOSYA  (ornek: exe PE_HELLO.EXE)"); tl_add("KUR: kur [DOSYA]  uygulamalar  (ornek: kur PE_HELLO.EXE)"); tl_add("Kurulu programi adiyla calistir (ornek: pe_hello)"); tl_add("GUVENLIK: guvenlik [ac|kapa|engelle IP|kaldir IP|izin PORT|liste]"); tl_add("HTTP: http ip[:port][/yol]"); tl_add("GOREV: gorev  (gorev sayisi, arka plan sayaci, bellek)"); }
     else if(str_eq(cmd, "ver"))   tl_add("WindOS 18.1 (x86, 32-bit)");
     else if(str_eq(cmd, "mem")){
         char b[TL_W]; kcpy(b, "FIZIKSEL RAM (MULTIBOOT): ");
@@ -2074,6 +2075,7 @@ static void term_exec(void){
     else if(str_eq(cmd, "kur"))   kur_cmd(arg);
     else if(str_eq(cmd, "uygulamalar")) uyg_list();
     else if(str_eq(cmd, "guvenlik")) fw_cmd(arg);
+    else if(str_eq(cmd, "gorev")) sys_status();
     else if(prog_try(cmd)) { }
     else {
         char b[TL_W];
@@ -2816,12 +2818,8 @@ struct __attribute__((packed)) IdtEntry { u16 off_lo; u16 sel; u8 zero; u8 type;
 struct __attribute__((packed)) IdtPtr  { u16 limit; u32 base; };
 static struct IdtEntry IDT[256];
 
-__attribute__((interrupt, target("general-regs-only")))
-static void timer_isr(void *frame){
-    (void)frame;
-    TICKS++;
-    outb(0x20, 0x20);                       /* EOI: ana PIC */
-}
+/* IRQ0 girisi: app/sched.c icinde (asm stub; TICKS ve gorev degisimi burada) */
+void timer_stub(void);
 
 static void idt_gate(u8 n, u32 handler, u16 cs){
     IDT[n].off_lo = (u16)(handler & 0xFFFF);
@@ -2851,7 +2849,7 @@ static void pit_init(u32 hz){
 static void timer_init(void){
     u16 cs;
     __asm__ volatile("mov %%cs, %0" : "=r"(cs));
-    idt_gate(0x20, (u32)(unsigned long)timer_isr, cs);
+    idt_gate(0x20, (u32)(unsigned long)timer_stub, cs);
     struct IdtPtr p;
     p.limit = (u16)(sizeof(IDT) - 1);
     p.base  = (u32)(unsigned long)IDT;
@@ -2872,6 +2870,11 @@ static int animating(void){
     return AI_BOOT_PHASE < 2 || MUS_PLAYING || (SN_OPEN && !SN_DEAD) || MIKU_OPEN
         || TASKMGR_OPEN || (BR_OPEN && BR_PAGE == 4 && BR_VIDEO);
 }
+
+/* Bellek, sayfalama, zamanlayici: mem.c (heap/frame), paging.c, sched.c */
+#include "app/mem.c"
+#include "app/paging.c"
+#include "app/sched.c"
 
 /* ========================================================================= */
 /* GIRIS                                                                     */
@@ -2913,7 +2916,14 @@ void kernel_main(multiboot_info_t *mbi){
             if(mend > mstart){ RD_BASE = (const unsigned char *)(unsigned long)mstart; RD_LEN = mend - mstart; }
         }
     }
+    /* Sira onemli: istisnalar (IDT) sayfalamadan once, sonra bellek, sonra gorevler */
+    exc_install();
+    mem_init(mbi);
+    sched_init();
+    task_create(bg_task);
+
     mouse_init(); term_init();
+    mem_report();
     nic_init();
     ac97_init();
     timer_init();

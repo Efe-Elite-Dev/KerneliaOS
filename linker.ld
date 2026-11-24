@@ -16,8 +16,11 @@ SECTIONS {
         *(.data .data.*)   
     }
     
-    .bss BLOCK(4K) : ALIGN(4K) { 
-        *(COMMON) 
-        *(.bss .bss.*) 
+    .bss BLOCK(4K) : ALIGN(4K) {
+        *(COMMON)
+        *(.bss .bss.*)
     }
+
+    /* Bellek ayiricisi: bu adresin altindaki her sey (kernel, bss, heap) kullanimda */
+    _kernel_end = .;
 }
