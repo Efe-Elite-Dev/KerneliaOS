@@ -967,6 +967,51 @@ static void icmp_rx(u32 src, const u8 *m, int n){
 
 static void tcp_rx(u32 src, const u8 *s, int n);
 
+/* ---- DNS yardimcilari (saf kod: app/dns.c, host testi app/test/test_dns.c) ---- */
+#include "app/dns.c"
+
+/* ---- UDP: DNS icin tek yerel port, tek bekleyen yanit ---- */
+#define UDP_BUF_MAX 512
+#define UDP_LPORT   33000
+static u8  UDP_BUF[UDP_BUF_MAX];
+static int UDP_N = 0, UDP_GOT = 0, UDP_WAIT = 0;
+static u32 UDP_WIP = 0;          /* beklenen kaynak IP */
+static u16 UDP_WSP = 0;          /* beklenen kaynak port */
+
+/* TCP ve UDP icin ortak ozet (sahte baslik dahil); proto: 6 TCP, 17 UDP */
+static u16 l4_csum(u32 src, u32 dst, u8 proto, const u8 *seg, int n){
+    u8 ph[12];
+    put32(ph, src); put32(ph + 4, dst); ph[8] = 0; ph[9] = proto; put16(ph + 10, (u16)n);
+    u32 s = 0;
+    for(int i = 0; i < 12; i += 2) s += (u32)((ph[i] << 8) | ph[i + 1]);
+    for(int i = 0; i + 1 < n; i += 2) s += (u32)((seg[i] << 8) | seg[i + 1]);
+    if(n & 1) s += (u32)(seg[n - 1] << 8);
+    while(s >> 16) s = (s & 0xFFFF) + (s >> 16);
+    return (u16)~s;
+}
+
+static void udp_rx(u32 src, const u8 *s, int n){
+    if(n < 8 || !UDP_WAIT) return;
+    u16 sp = get16(s), dp = get16(s + 2), len = get16(s + 4);
+    if(len < 8 || len > n) return;
+    if(src != UDP_WIP || sp != UDP_WSP || dp != UDP_LPORT) return;
+    int pl = len - 8;
+    if(pl > UDP_BUF_MAX) pl = UDP_BUF_MAX;
+    for(int i = 0; i < pl; i++) UDP_BUF[i] = s[8 + i];
+    UDP_N = pl;
+    UDP_GOT = 1;
+}
+
+static int udp_send(u32 dst, u16 sport, u16 dport, const u8 *data, int n){
+    u8 seg[8 + UDP_BUF_MAX];
+    if(n < 0 || n > UDP_BUF_MAX) return 0;
+    put16(seg, sport); put16(seg + 2, dport); put16(seg + 4, (u16)(8 + n)); put16(seg + 6, 0);
+    for(int i = 0; i < n; i++) seg[8 + i] = data[i];
+    u16 c = l4_csum(NET_IP, dst, 17, seg, 8 + n);
+    put16(seg + 6, c == 0 ? 0xFFFF : c);
+    return ip_send(dst, 17, seg, 8 + n);
+}
+
 /* ---- GUVENLIK DUVARI (basit paket filtresi) ----
    Gelen IPv4 paketleri islenmeden once denetlenir:
    - engelli IP listesindeki kaynaklardan gelen tum paketler dusurulur
@@ -1003,6 +1048,7 @@ static void ip_rx(const u8 *p, int n){
     if(fw_drop(get32(p + 12), p[9], p + ihl, tot - ihl)) return;
     if(p[9] == 1) icmp_rx(get32(p + 12), p + ihl, tot - ihl);
     else if(p[9] == 6) tcp_rx(get32(p + 12), p + ihl, tot - ihl);
+    else if(p[9] == 17) udp_rx(get32(p + 12), p + ihl, tot - ihl);
 }
 
 static void net_rx(const u8 *f, int n){
@@ -1263,16 +1309,10 @@ static u8  TCP_RX[TCP_RX_CAP];
 static int TCP_RXN = 0;
 static int TCP_FIN = 0;
 static u16 TCP_EPHEM = 49152;
+static u32 TCP_UNA = 0;          /* karsi taraf tarafindan onaylanan en yuksek sira no */
 
 static u16 tcp_csum(u32 src, u32 dst, const u8 *seg, int n){
-    u8 ph[12];
-    put32(ph, src); put32(ph + 4, dst); ph[8] = 0; ph[9] = 6; put16(ph + 10, (u16)n);
-    u32 s = 0;
-    for(int i = 0; i < 12; i += 2) s += (u32)((ph[i] << 8) | ph[i + 1]);
-    for(int i = 0; i + 1 < n; i += 2) s += (u32)((seg[i] << 8) | seg[i + 1]);
-    if(n & 1) s += (u32)(seg[n - 1] << 8);
-    while(s >> 16) s = (s & 0xFFFF) + (s >> 16);
-    return (u16)~s;
+    return l4_csum(src, dst, 6, seg, n);
 }
 
 /* Bir TCP segmenti gonderir; SYN/FIN sirayi bir artirir */
@@ -1302,12 +1342,14 @@ static void tcp_rx(u32 src, const u8 *s, int n){
     if(TCP_STATE == TS_SYN_SENT){
         if((fl & (TF_SYN | TF_ACK)) == (TF_SYN | TF_ACK) && ack == TCP_SEQ){
             TCP_ACK = seq + 1;
+            TCP_UNA = ack;
             TCP_STATE = TS_ESTAB;
             tcp_out(TF_ACK, 0, 0);
         }
         return;
     }
     if(TCP_STATE != TS_ESTAB) return;
+    if((fl & TF_ACK) && (i32)(ack - TCP_UNA) > 0 && (i32)(ack - TCP_SEQ) <= 0) TCP_UNA = ack;
     int pl = n - doff;
     if(pl > 0 && seq == TCP_ACK){                     /* sirali veri: al */
         for(int i = 0; i < pl && TCP_RXN < TCP_RX_CAP; i++) TCP_RX[TCP_RXN++] = s[doff + i];
@@ -1340,6 +1382,28 @@ static int tcp_connect(u32 ip, u16 port){
     return TCP_STATE == TS_ESTAB;
 }
 
+/* Veriyi karsi taraf onaylayana kadar gonderir. Onaylanmayan kisim 50 tick icinde yanit
+   gelmezse bbastan (TCP_UNA'dan) yeniden gonderilir; en fazla 4 tur. Donus: 1 tamam, 0 basarisiz. */
+static int tcp_send_reliable(const u8 *d, int n){
+    u32 start = TCP_SEQ;
+    u32 end = start + (u32)n;
+    for(int tries = 0; tries < 4; tries++){
+        u32 off = TCP_UNA - start;
+        if((i32)off < 0) off = 0;
+        TCP_SEQ = TCP_UNA;
+        while(off < (u32)n){
+            int c = ((int)((u32)n - off) < TCP_MSS) ? (int)((u32)n - off) : TCP_MSS;
+            if(!tcp_out(TF_PSH | TF_ACK, d + off, c)) return 0;
+            off += (u32)c;
+        }
+        u32 until = TICKS + 50;
+        while(TCP_STATE == TS_ESTAB && (i32)(TCP_UNA - end) < 0 && TICKS < until) nic_poll();
+        if(TCP_STATE != TS_ESTAB) return 0;
+        if((i32)(TCP_UNA - end) >= 0){ TCP_SEQ = end; return 1; }
+    }
+    return 0;
+}
+
 /* HTTP/1.0 GET: yaniti TCP_RX'e doldurur (sunucu kapatinca biter, en fazla wait_ticks tick) */
 static int http_get(u32 ip, u16 port, const char *path, const char *host, u32 wait_ticks){
     if(!tcp_connect(ip, port)) return 0;
@@ -1349,10 +1413,7 @@ static int http_get(u32 ip, u16 port, const char *path, const char *host, u32 wa
     for(int i = 0; i < 5; i++){
         for(int j = 0; parts[i][j] && k < 500; j++) req[k++] = parts[i][j];
     }
-    for(int off = 0; off < k; off += TCP_MSS){
-        int c = (k - off < TCP_MSS) ? (k - off) : TCP_MSS;
-        tcp_out(TF_PSH | TF_ACK, (const u8 *)req + off, c);
-    }
+    if(!tcp_send_reliable((const u8 *)req, k)){ TCP_STATE = TS_DONE; return 0; }
     u32 until = TICKS + wait_ticks;
     while(!TCP_FIN && TICKS < until) nic_poll();   /* hlt yok: RTL8139 halkasi hizli bosalsin */
     if(TCP_FIN && TCP_STATE == TS_ESTAB) tcp_out(TF_FIN | TF_ACK, 0, 0);
@@ -1391,14 +1452,78 @@ static void http_show(void){
     }
 }
 
-/* URL: [http://]ip[:port][/yol] -> ip, port, yol. Ornek: 10.0.2.2:8080/index.html */
-static int url_parse(const char *arg, u32 *ip, u16 *port, char *path){
+/* ---- DNS cozumleme ---- */
+#define DNS_DEFAULT 0x0A000203u   /* QEMU user-net DNS sunucusu (10.0.2.3) */
+
+static const char *dns_err_text(int r){
+    switch(r){
+    case DNS_OK:       return "COZUMLENDI.";
+    case DNS_NONE:     return "YANITTA A KAYDI YOK (ya da bozuk yanit).";
+    case DNS_NXDOMAIN: return "AD BULUNAMADI (NXDOMAIN).";
+    case -1:           return "GECERSIZ AD.";
+    case -3:           return "ARP YANITI ALINAMADI (DNS SUNUCUSU).";
+    case -5:           return "DNS ZAMAN ASIMI.";
+    default:           return "DNS HATASI.";
+    }
+}
+
+/* Ad cozumleme: sunucuya A sorgusu gonderir, 3 deneme (her biri ~1 sn).
+   Donus: DNS_OK (ip_out dolu), DNS_NONE, DNS_NXDOMAIN, -1 gecersiz ad, -3 ARP, -5 zaman asimi. */
+static int dns_resolve(const char *name, u32 server, u32 *ip_out){
+    u8 q[300];
+    u32 nh = (((server ^ NET_IP) & 0xFFFFFF00u) == 0) ? server : NET_GW;
+    if(!arp_resolve(nh)) return -3;
+    unsigned short id = (unsigned short)(0x5D00u + (TICKS & 0xFFu));
+    int qn = dns_build_query(q, sizeof q, id, name);
+    if(qn < 0) return -1;
+    for(int t = 0; t < 3; t++){
+        UDP_GOT = 0; UDP_WAIT = 1; UDP_WIP = server; UDP_WSP = DNS_PORT;
+        udp_send(server, UDP_LPORT, DNS_PORT, q, qn);
+        u32 until = TICKS + 50;
+        while(!UDP_GOT && TICKS < until){ nic_poll(); __asm__ volatile("hlt"); }
+        if(UDP_GOT){
+            UDP_WAIT = 0;
+            return dns_parse_a(UDP_BUF, (unsigned)UDP_N, id, ip_out);
+        }
+    }
+    UDP_WAIT = 0;
+    return -5;
+}
+
+/* dns ad [sunucu]: ornek: dns example.com   veya   dns test.local 10.0.2.2 */
+static void dns_cmd(const char *arg){
+    if(!NIC_UP){ tl_add("AG KARTI YOK: QEMU -nic user,model=rtl8139 ile calistirin."); return; }
+    char name[48];
+    int k = 0;
+    while(arg[k] && arg[k] != ' ' && k < 47){ name[k] = arg[k]; k++; }
+    name[k] = 0;
+    const char *rest = arg + k;
+    while(*rest == ' ') rest++;
+    u32 server = DNS_DEFAULT;
+    if(!name[0] || (*rest && !parse_ip(rest, &server))){
+        tl_add("KULLANIM: dns ad [sunucu]  (ornek: dns example.com)");
+        return;
+    }
+    u32 ip = 0;
+    int r = dns_resolve(name, server, &ip);
+    if(r != DNS_OK){ tl_add(dns_err_text(r)); return; }
+    char ipst[16], line[96];
+    ip_str(ip, ipst);
+    kcpy(line, name);
+    kcpy(line + klen(line), " -> ");
+    kcpy(line + klen(line), ipst);
+    tl_add(line);
+}
+
+/* URL: [http://]host[:port][/yol] -> host (ad ya da IP), port, yol.
+   Ornek: 10.0.2.2:8080/index.html   veya   example.com/ */
+static int url_parse(const char *arg, char *host, u16 *port, char *path){
     if(arg[0] == 'h' && arg[1] == 't' && arg[2] == 't' && arg[3] == 'p' && arg[4] == ':' && arg[5] == '/' && arg[6] == '/')
         arg += 7;
-    char host[32]; int hn = 0;
-    while(arg[hn] && arg[hn] != ':' && arg[hn] != '/' && arg[hn] != ' ' && hn < 31){ host[hn] = arg[hn]; hn++; }
+    int hn = 0;
+    while(arg[hn] && arg[hn] != ':' && arg[hn] != '/' && arg[hn] != ' ' && hn < 63){ host[hn] = arg[hn]; hn++; }
     host[hn] = 0;
-    if(!parse_ip(host, ip)) return 0;
+    if(hn == 0) return 0;
     const char *p = arg + hn;
     u32 pt = 80;
     if(*p == ':'){ p++; pt = parse_uint(p); while(*p >= '0' && *p <= '9') p++; }
@@ -1413,16 +1538,19 @@ static int url_parse(const char *arg, u32 *ip, u16 *port, char *path){
     return 1;
 }
 
-/* http ip[:port][/yol]: ornek http 10.0.2.2:8080/index.html */
+/* http host[:port][/yol]: ornek: http 10.0.2.2:8080/index.html  veya  http example.com/ */
 static void http_cmd(const char *arg){
     if(!NIC_UP){ tl_add("AG KARTI YOK: QEMU -nic user,model=rtl8139 ile calistirin."); return; }
-    u32 ip = 0; u16 port = 80; char path[96];
-    if(!url_parse(arg, &ip, &port, path)){ tl_add("KULLANIM: http ip[:port][/yol]  (ornek: http 10.0.2.2:8080/index.html)"); return; }
-    char ipst[16];
-    ip_str(ip, ipst);
-    if(!http_get(ip, port, path, ipst, 150)){ tl_add("BAGLANTI KURULAMADI (ZAMAN ASIMI)."); return; }
+    u32 ip = 0; u16 port = 80; char host[64], path[96];
+    if(!url_parse(arg, host, &port, path)){ tl_add("KULLANIM: http host[:port][/yol]  (ornek: http example.com/)"); return; }
+    if(!parse_ip(host, &ip)){
+        int r = dns_resolve(host, DNS_DEFAULT, &ip);
+        if(r != DNS_OK){ tl_add(dns_err_text(r)); return; }
+    }
+    if(!http_get(ip, port, path, host, 150)){ tl_add("BAGLANTI KURULAMADI (ZAMAN ASIMI)."); return; }
     http_show();
 }
+
 
 /* ---- .wind calistirici: ATA diskinden FAT ile dosya okur, programi belleğe yukler,
    kernel API tablosunu verip giris noktasini cagirir ---- */
@@ -1980,7 +2108,7 @@ static void term_exec(void){
     const char *arg = &line[i];
     if(c == 0) return;
 
-    if(str_eq(cmd, "help")){ tl_add("KOMUTLAR: help ver mem echo clear time muzik miku not snake web exit lspci"); tl_add("AG: ping [ip]  (ornek: ping 10.0.2.2)"); tl_add("SES: ses [hz]  (ornek: ses 440)"); tl_add("WIND: wind DOSYA  (ornek: wind HELLO.WIND)"); tl_add("EXE: exe DOSYA  (ornek: exe PE_HELLO.EXE)"); tl_add("KUR: kur [DOSYA]  uygulamalar  (ornek: kur PE_HELLO.EXE)"); tl_add("Kurulu programi adiyla calistir (ornek: pe_hello)"); tl_add("GUVENLIK: guvenlik [ac|kapa|engelle IP|kaldir IP|izin PORT|liste]"); tl_add("HTTP: http ip[:port][/yol]"); tl_add("GOREV: gorev  (gorev sayisi, arka plan sayaci, bellek)"); }
+    if(str_eq(cmd, "help")){ tl_add("KOMUTLAR: help ver mem echo clear time muzik miku not snake web exit lspci"); tl_add("AG: ping [ip]  (ornek: ping 10.0.2.2)"); tl_add("SES: ses [hz]  (ornek: ses 440)"); tl_add("WIND: wind DOSYA  (ornek: wind HELLO.WIND)"); tl_add("EXE: exe DOSYA  (ornek: exe PE_HELLO.EXE)"); tl_add("KUR: kur [DOSYA]  uygulamalar  (ornek: kur PE_HELLO.EXE)"); tl_add("Kurulu programi adiyla calistir (ornek: pe_hello)"); tl_add("GUVENLIK: guvenlik [ac|kapa|engelle IP|kaldir IP|izin PORT|liste]"); tl_add("HTTP: http host[:port][/yol]  (ornek: http example.com/)"); tl_add("DNS: dns ad [sunucu]  (ornek: dns example.com)"); tl_add("GOREV: gorev  (gorev sayisi, arka plan sayaci, bellek)"); }
     else if(str_eq(cmd, "ver"))   tl_add("WindOS 18.1 (x86, 32-bit)");
     else if(str_eq(cmd, "mem")){
         char b[TL_W]; kcpy(b, "FIZIKSEL RAM (MULTIBOOT): ");
@@ -2001,6 +2129,7 @@ static void term_exec(void){
     else if(str_eq(cmd, "ping"))  ping_cmd(arg);
     else if(str_eq(cmd, "ses"))   ses_cmd(arg);
     else if(str_eq(cmd, "http"))  http_cmd(arg);
+    else if(str_eq(cmd, "dns"))   dns_cmd(arg);
     else if(str_eq(cmd, "wind"))  wind_run(arg);
     else if(str_eq(cmd, "exe"))   exe_run(arg);
     else if(str_eq(cmd, "kur"))   kur_cmd(arg);
@@ -2330,12 +2459,14 @@ static void br_go(void){
     if(r != 0){ BR_PAGE = (r > 0) ? 4 : 1; BR_LAST = TICKS; return; }
 
     /* Kopru kapaliysa: IP:PORT/YOL adresi icin eski HTTP metin tarayicisi */
-    u32 ip = 0; u16 port = 80; char path[96];
-    if(!url_parse(BR_URL, &ip, &port, path)){
+    u32 ip = 0; u16 port = 80; char path[96], host[64];
+    if(!url_parse(BR_URL, host, &port, path)){
         BR_PAGE = 1; kcpy(BR_ERR, "KOPRU KAPALI: host'ta tools/chromium_bridge.py calistirin"); return;
     }
-    char host[16];
-    ip_str(ip, host);
+    if(!parse_ip(host, &ip)){
+        int r = dns_resolve(host, DNS_DEFAULT, &ip);
+        if(r != DNS_OK){ BR_PAGE = 1; kcpy(BR_ERR, dns_err_text(r)); return; }
+    }
     if(!http_get(ip, port, path, host, 150)){ BR_PAGE = 1; kcpy(BR_ERR, "BAGLANTI KURULAMADI (KOPRU KAPALI MI?)"); return; }
     html_from_response();
     BR_PAGE = 3;
