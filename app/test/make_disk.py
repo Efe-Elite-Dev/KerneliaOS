@@ -27,7 +27,7 @@ def main():
                        check=True, stdout=subprocess.DEVNULL)
         with open(os.path.join(tmp, "HELLO.WIN"), "rb") as f:
             wind = f.read()
-    files = {"HELLO.WIND": wind}
+    files = {"HELLO.WIND": wind, "HELLO.KAEI": wind}   # .kaei: ayni .wind formati, KerneliaOS uzantisi
     # Hazir derlemeler (depoda): PE_HELLO.EXE, ULIB_HELLO.EXE, FAULT_TEST.EXE
     # Eksik olan bir dosya icin uyari verilir; ornek derlemeler app/samples/build_*.py ile yeniden uretilir.
     prebuilt_dir = os.path.join(ROOT, "app", "samples", "prebuilt")
