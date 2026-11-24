@@ -30,7 +30,17 @@ iso: kernel.bin grub.cfg
 run: iso
 	./run.sh windos.iso
 
+# Hata ayiklama: QEMU 1234 portunda gdb bekler ve duraklatilmis baslar.
+#   Baska terminalde: gdb kernel.bin -ex 'target remote :1234' -ex 'break kernel_main' -ex continue
+debug: iso
+	qemu-system-i386 -cdrom windos.iso -m 256 -vga std -nic user,model=rtl8139 -serial stdio -s -S
+
+test: 
+	bash tools/qemu_test.sh
+	gcc -std=c99 -Wall -Wextra -Werror -Wno-unused-function -o test_mem app/test/test_mem.c && ./test_mem
+	gcc -std=c99 -Wall -Wextra -Werror -Wno-unused-function -o test_dns app/test/test_dns.c && ./test_dns
+
 clean:
 	rm -rf boot.o kernel.o kernel.bin iso windos.iso
 
-.PHONY: all iso run clean
+.PHONY: all iso run debug test clean
