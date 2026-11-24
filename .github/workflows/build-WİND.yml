@@ -19,7 +19,7 @@ jobs:
     - name: 🛠️ Gerekli Derleyici Araçlarını (Toolchain) Kur
       run: |
         sudo apt-get update
-        sudo apt-get install -y nasm gcc-multilib mtools xorriso grub-pc-bin grub-common
+        sudo apt-get install -y nasm gcc-multilib mtools xorriso grub-pc-bin grub-common qemu-system-x86
 
     - name: 🛡️ Font ve multiboot doğrulaması
       run: |
@@ -37,8 +37,16 @@ jobs:
     - name: 🔗 Sistemi Bağla (Linker)
       run: ld -m elf_i386 -z noexecstack -T linker.ld boot.o kernel.o -o kernel.bin
 
+    - name: 🧪 Host testleri (bellek ayiricisi, DNS ayristirici)
+      run: |
+        gcc -std=c99 -Wall -Wextra -Werror -Wno-unused-function -o test_mem app/test/test_mem.c && ./test_mem
+        gcc -std=c99 -Wall -Wextra -Werror -Wno-unused-function -o test_dns app/test/test_dns.c && ./test_dns
+
     - name: ✅ Multiboot başlığını doğrula
       run: grub-file --is-x86-multiboot kernel.bin
+
+    - name: 🖥️ QEMU testleri (cekirdek ici testler, panik dokumu, cikis kodlari)
+      run: bash tools/qemu_test.sh
 
     - name: 💿 Önyüklenebilir ISO Dosyası Oluştur (VirtualBox İçin)
       run: |

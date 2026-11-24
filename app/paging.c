@@ -26,10 +26,53 @@ static unsigned long long MEM_RAM_TOP = 0;
 /* Sayfalama acildiktan sonra bir hata, sessiz yeniden baslatma yerine       */
 /* okunabilir bir mesaj verir.                                              */
 /* ------------------------------------------------------------------------ */
-static void __attribute__((noinline)) exc_panic(u32 n){
+static const char *exc_name(u32 n){
+    switch(n){
+        case 0: return "DIVIDE ERROR";
+        case 1: return "DEBUG";
+        case 2: return "NMI";
+        case 3: return "BREAKPOINT";
+        case 4: return "OVERFLOW";
+        case 5: return "BOUND RANGE";
+        case 6: return "INVALID OPCODE";
+        case 7: return "DEVICE NA";
+        case 8: return "DOUBLE FAULT";
+        case 10: return "INVALID TSS";
+        case 11: return "SEGMENT NP";
+        case 12: return "STACK FAULT";
+        case 13: return "GENERAL PROTECTION";
+        case 14: return "PAGE FAULT";
+        case 16: return "FPU ERROR";
+        case 17: return "ALIGNMENT CHECK";
+        case 18: return "MACHINE CHECK";
+        case 19: return "SIMD FP";
+        default: return "BILINMEYEN";
+    }
+}
+
+/* f: istisna cercevesi [eip, cs, eflags, ...]. Ekrana ve seri porta (COM1) dokum yazar.
+   Yazmac degerleri (EAX..EDI) gcc interrupt isleyicisinde alinamaz; bu yuzden yalnizca
+   cerceve, kontrol yazmaclari ve cercevenin ustundeki yigin kelimeleri dokulur. */
+static void __attribute__((noinline)) exc_panic(u32 n, void *f, u32 err, u32 has_err){
     __asm__ volatile("cli");
-    u32 cr2 = 0;
+    u32 cr0 = 0, cr2 = 0, cr3 = 0;
+    __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
     __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
+    __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
+    volatile u32 *fw = (volatile u32 *)f;
+    u32 eip = fw[0], cs = fw[1], efl = fw[2];
+
+    ser_puts("\nPANIC: CEKIRDEK HATASI\n");
+    ser_puts("VEKTOR="); ser_hex(n, 2); ser_puts(" ("); ser_puts(exc_name(n)); ser_puts(")\n");
+    if(has_err){ ser_puts("HATA KODU="); ser_hex(err, 8); ser_puts("\n"); }
+    ser_puts("EIP="); ser_hex(eip, 8); ser_puts(" CS="); ser_hex(cs, 4);
+    ser_puts(" EFLAGS="); ser_hex(efl, 8); ser_puts("\n");
+    ser_puts("CR0="); ser_hex(cr0, 8); ser_puts(" CR2="); ser_hex(cr2, 8);
+    ser_puts(" CR3="); ser_hex(cr3, 8); ser_puts("\n");
+    ser_puts("YIGIN:");
+    for(u32 i = 0; i < 8; i++){ ser_puts(" "); ser_hex(fw[i], 8); }
+    ser_puts("\n");
+
     const u32 bg = 0xFF5A0000u;
     fr(0, 0, (i32)SW, (i32)SH, bg);
     char hx[12], line[TL_W];
@@ -40,7 +83,21 @@ static void __attribute__((noinline)) exc_panic(u32 n){
     hex_str(cr2, 8, hx);
     app_str(line, "CR2: 0x", hx);
     ds(20, 110, line, CW, bg, 2);
+    app_str(line, "AD: ", exc_name(n));
+    ds(20, 150, line, CW, bg, 2);
+    hex_str(eip, 8, hx);
+    app_str(line, "EIP: 0x", hx);
+    ds(20, 190, line, CW, bg, 2);
+    if(has_err){
+        hex_str(err, 8, hx);
+        app_str(line, "HATA KODU: 0x", hx);
+        ds(20, 230, line, CW, bg, 2);
+    }
     swap_buffers();
+#ifdef WIND_TEST
+    ser_puts("WIND_TEST: PANIC\n");
+    dbg_exit(2);
+#endif
     for(;;) __asm__ volatile("hlt");
 }
 
@@ -48,18 +105,20 @@ static void __attribute__((noinline)) exc_panic(u32 n){
 static void user_fault(u32 n, u32 cr2);
 
 /* f: istisna cercevesi (eip, cs, eflags, ...). cs'nin RPL'i 3 ise kullanici hatasi. */
-static void __attribute__((noinline)) exc_common(u32 n, void *f){
+static void __attribute__((noinline)) exc_common(u32 n, void *f, u32 err, u32 has_err){
     u32 cs = ((volatile u32 *)f)[1];
     if(cs & 3u){
         u32 cr2 = 0;
         __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
+        if(SER_OK){ ser_puts("KULLANICI HATASI vektor="); ser_hex(n, 2); ser_puts("\n"); }
         user_fault(n, cr2);
     }
-    exc_panic(n);
+    exc_panic(n, f, err, has_err);
 }
 
-#define EXC_STUB(n)  __attribute__((interrupt, target("general-regs-only"))) static void exc##n(void *f){ exc_common(n, f); }
-#define EXC_STUBE(n) __attribute__((interrupt, target("general-regs-only"))) static void exc##n(void *f, u32 err){ (void)err; exc_common(n, f); }
+#define EXC_STUB(n)  __attribute__((interrupt, target("general-regs-only"))) static void exc##n(void *f){ exc_common(n, f, 0, 0); }
+#define EXC_STUBE(n) __attribute__((interrupt, target("general-regs-only"))) static void exc##n(void *f, u32 err){ exc_common(n, f, err, 1); }
+
 EXC_STUB(0)   EXC_STUB(1)   EXC_STUB(2)   EXC_STUB(3)   EXC_STUB(4)   EXC_STUB(5)   EXC_STUB(6)   EXC_STUB(7)
 EXC_STUBE(8)  EXC_STUB(9)   EXC_STUBE(10) EXC_STUBE(11) EXC_STUBE(12) EXC_STUBE(13) EXC_STUBE(14) EXC_STUB(15)
 EXC_STUB(16)  EXC_STUBE(17) EXC_STUB(18) EXC_STUB(19) EXC_STUB(20) EXC_STUB(21) EXC_STUB(22) EXC_STUB(23)
