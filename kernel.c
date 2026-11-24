@@ -968,6 +968,7 @@ static void icmp_rx(u32 src, const u8 *m, int n){
 static void tcp_rx(u32 src, const u8 *s, int n);
 
 /* ---- DNS yardimcilari (saf kod: app/dns.c, host testi app/test/test_dns.c) ---- */
+#include "app/serial.c"   /* COM1 gunluk ve test cikisi (inb/outb yukarida) */
 #include "app/dns.c"
 
 /* ---- UDP: DNS icin tek yerel port, tek bekleyen yanit ---- */
@@ -2939,11 +2940,15 @@ static int animating(void){
 #include "app/paging.c"
 #include "app/sched.c"
 #include "app/usermode.c"
+#ifdef WIND_TEST
+#include "app/ktest.c"   /* cekirdek ici testleri (tools/qemu_test.sh) */
+#endif
 
 /* ========================================================================= */
 /* GIRIS                                                                     */
 /* ========================================================================= */
 void kernel_main(multiboot_info_t *mbi){
+    ser_init();          /* seri port: erken hatalar da loglanir */
     u8 bpp_bits = mbi->framebuffer_bpp;
     if(bpp_bits == 0) bpp_bits = 32;
     BPP = bpp_bits / 8;
@@ -2993,6 +2998,9 @@ void kernel_main(multiboot_info_t *mbi){
     nic_init();
     ac97_init();
     timer_init();
+#ifdef WIND_TEST
+    kt_run();            /* sonuc seri porta yazilir; QEMU cikis kodu bildirir */
+#endif
 
     while(1){
         frame_wait();

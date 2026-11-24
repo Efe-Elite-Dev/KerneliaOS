@@ -10,4 +10,9 @@ windos.iso
 WindOS-Quantum.iso
 # buyuk/yerel binary dosyalar
 *.exe
+# hazir ornek derlemeler (disk imajina eklenir)
+!app/samples/prebuilt/*.EXE
+!app/samples/prebuilt/*.exe
 build_output.log
+build/
+__pycache__/
