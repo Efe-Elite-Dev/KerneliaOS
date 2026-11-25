@@ -21,4 +21,22 @@ int bn_cmp(const uint32_t *a, const uint32_t *b, size_t len);
 int bn_modexp(uint32_t *res, const uint32_t *base, const uint8_t *exp, size_t elen,
               const uint32_t *m, size_t len);
 
+/* Modüler baglam: tek modulus m (> 1) icin Montgomery sabitleri. */
+typedef struct {
+    uint32_t m[BN_MAXLEN];
+    uint32_t r2[BN_MAXLEN];
+    uint32_t n0;
+    size_t len;
+} bn_ctx;
+
+/* Baglami hazirlar. m tek ve > 1 olmali. Basarili 0. */
+int bn_ctx_init(bn_ctx *c, const uint32_t *m, size_t len);
+
+/* r = a*b mod m. a, b < m olmali. r ile a/b takma ad olabilir. */
+void bn_mulmod(const bn_ctx *c, uint32_t *r, const uint32_t *a, const uint32_t *b);
+
+/* r = a+b mod m ve r = a-b mod m. a, b < m olmali. */
+void bn_addmod(uint32_t *r, const uint32_t *a, const uint32_t *b, const uint32_t *m, size_t len);
+void bn_submod(uint32_t *r, const uint32_t *a, const uint32_t *b, const uint32_t *m, size_t len);
+
 #endif

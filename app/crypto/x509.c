@@ -1,6 +1,8 @@
 /* KerneliaOS X.509 ayrıştırma. Bkz. x509.h */
 #include "x509.h"
 #include "rsa.h"
+#include "ecdsa.h"
+#include "sha256.h"
 
 /* DER okuyucu: bir imlec (pointer + kalan uzunluk) */
 typedef struct { const uint8_t *p; size_t n; } cur;
@@ -46,9 +48,13 @@ static int cur_expect_full(cur *c, uint8_t tag, cur *val, const uint8_t **full, 
     return t == tag ? 0 : -1;
 }
 
-/* Sabit OID icerikleri */
-static const uint8_t OID_SHA256_RSA[9]  = {0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0B};
-static const uint8_t OID_SAN[3]         = {0x55, 0x1D, 0x11};   /* 2.5.29.17 */
+/* Sabit OID icerikleri (yalnizca deger baytlari) */
+static const uint8_t OID_SHA256_RSA[9]   = {0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0B};
+static const uint8_t OID_SHA256_ECDSA[8] = {0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x04, 0x03, 0x02};
+static const uint8_t OID_RSA_ENC[9]      = {0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x01};
+static const uint8_t OID_EC_PUB[7]       = {0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x02, 0x01};
+static const uint8_t OID_P256[8]         = {0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07};
+static const uint8_t OID_SAN[3]          = {0x55, 0x1D, 0x11};   /* 2.5.29.17 */
 
 static int bytes_eq(const uint8_t *a, size_t al, const uint8_t *b, size_t bl){
     if(al != bl) return 0;
@@ -69,7 +75,9 @@ int x509_parse(x509_cert *c, const uint8_t *der, size_t len){
 
     if(cur_expect(&cert, 0x30, &sa) != 0) return -1;
     if(cur_expect(&sa, 0x06, &oid) != 0) return -1;
-    c->sha256_rsa = bytes_eq(oid.p, oid.n, OID_SHA256_RSA, sizeof OID_SHA256_RSA);
+    c->sha256_rsa   = bytes_eq(oid.p, oid.n, OID_SHA256_RSA, sizeof OID_SHA256_RSA);
+    c->sha256_ecdsa = bytes_eq(oid.p, oid.n, OID_SHA256_ECDSA, sizeof OID_SHA256_ECDSA);
+    if(!c->sha256_rsa && !c->sha256_ecdsa) return -1;
 
     if(cur_expect(&cert, 0x03, &bits) != 0 || bits.n < 1 || bits.p[0] != 0) return -1;
     c->sig = bits.p + 1; c->sig_len = bits.n - 1;
@@ -86,16 +94,26 @@ int x509_parse(x509_cert *c, const uint8_t *der, size_t len){
     if(cur_expect_full(&tbs, 0x30, &ext, &full, &flen) != 0) return -1;
     c->subject = full; c->subject_len = flen;
 
-    /* SubjectPublicKeyInfo { algId, BIT STRING { RSAPublicKey } } */
+    /* SubjectPublicKeyInfo { algId, BIT STRING } */
+    cur alg, curve;
     if(cur_expect(&tbs, 0x30, &spki) != 0) return -1;
-    if(cur_expect(&spki, 0x30, &ext) != 0) return -1;              /* algId (RSA varsayilir) */
+    if(cur_expect(&spki, 0x30, &alg) != 0) return -1;
+    if(cur_expect(&alg, 0x06, &oid) != 0) return -1;
     if(cur_expect(&spki, 0x03, &key) != 0 || key.n < 1 || key.p[0] != 0) return -1;
-    rsa.p = key.p + 1; rsa.n = key.n - 1;
-    if(cur_expect(&rsa, 0x30, &ext) != 0) return -1;
-    if(cur_expect(&ext, 0x02, &oid) != 0) return -1;               /* modulus */
-    c->n = oid.p; c->n_len = oid.n;
-    if(cur_expect(&ext, 0x02, &oid) != 0) return -1;               /* publicExponent */
-    c->e = oid.p; c->e_len = oid.n;
+    if(bytes_eq(oid.p, oid.n, OID_RSA_ENC, sizeof OID_RSA_ENC)){
+        rsa.p = key.p + 1; rsa.n = key.n - 1;                      /* RSAPublicKey */
+        if(cur_expect(&rsa, 0x30, &ext) != 0) return -1;
+        if(cur_expect(&ext, 0x02, &oid) != 0) return -1;           /* modulus */
+        c->n = oid.p; c->n_len = oid.n;
+        if(cur_expect(&ext, 0x02, &oid) != 0) return -1;           /* publicExponent */
+        c->e = oid.p; c->e_len = oid.n;
+    } else if(bytes_eq(oid.p, oid.n, OID_EC_PUB, sizeof OID_EC_PUB)){
+        if(cur_expect(&alg, 0x06, &curve) != 0) return -1;         /* namedCurve */
+        if(!bytes_eq(curve.p, curve.n, OID_P256, sizeof OID_P256)) return -1;
+        c->ec = key.p + 1; c->ec_len = key.n - 1;                  /* 04 || X || Y */
+    } else {
+        return -1;
+    }
 
     /* [3] EXPLICIT Extensions: SAN'i ara */
     if(cur_peek(&tbs) == 0xA3){
@@ -119,10 +137,19 @@ int x509_parse(x509_cert *c, const uint8_t *der, size_t len){
 }
 
 int x509_verify_issuer(const x509_cert *child, const x509_cert *issuer){
-    if(!child->sha256_rsa || !issuer->n || !issuer->e) return -1;
     if(!bytes_eq(child->issuer, child->issuer_len, issuer->subject, issuer->subject_len)) return -1;
-    return rsa_pkcs1_sha256_verify(issuer->n, issuer->n_len, issuer->e, issuer->e_len,
-                                   child->sig, child->sig_len, child->tbs, child->tbs_len);
+    if(child->sha256_rsa){
+        if(!issuer->n || !issuer->e) return -1;
+        return rsa_pkcs1_sha256_verify(issuer->n, issuer->n_len, issuer->e, issuer->e_len,
+                                       child->sig, child->sig_len, child->tbs, child->tbs_len);
+    }
+    if(child->sha256_ecdsa){
+        uint8_t h[32];
+        if(!issuer->ec || issuer->ec_len != 65) return -1;
+        sha256(child->tbs, child->tbs_len, h);
+        return ecdsa_p256_verify(issuer->ec, child->sig, child->sig_len, h);
+    }
+    return -1;
 }
 
 static uint8_t lower(uint8_t c){ return (c >= 'A' && c <= 'Z') ? (uint8_t)(c + 32) : c; }
