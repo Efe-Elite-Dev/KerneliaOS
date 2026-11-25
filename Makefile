@@ -46,6 +46,7 @@ test:
 	gcc -std=c99 -Wall -Wextra -Werror -Wno-unused-function -o test_x509 app/test/test_x509.c && ./test_x509
 	gcc -std=c99 -Wall -Wextra -Werror -Wno-unused-function -o test_ecdsa app/test/test_ecdsa.c && ./test_ecdsa
 	gcc -std=c99 -Wall -Wextra -Werror -Wno-unused-function -o test_pss app/test/test_pss.c && ./test_pss
+	gcc -std=c99 -Wall -Wextra -Werror -Wno-unused-function -o test_http_body app/test/test_http_body.c && ./test_http_body
 	bash tools/tls_interop.sh
 
 clean:
