@@ -45,6 +45,7 @@ test:
 	gcc -std=c99 -Wall -Wextra -Werror -Wno-unused-function -o test_rsa app/test/test_rsa.c && ./test_rsa
 	gcc -std=c99 -Wall -Wextra -Werror -Wno-unused-function -o test_x509 app/test/test_x509.c && ./test_x509
 	gcc -std=c99 -Wall -Wextra -Werror -Wno-unused-function -o test_ecdsa app/test/test_ecdsa.c && ./test_ecdsa
+	gcc -std=c99 -Wall -Wextra -Werror -Wno-unused-function -o test_pss app/test/test_pss.c && ./test_pss
 
 clean:
 	rm -rf boot.o kernel.o kernel.bin iso kerneliaos.iso
