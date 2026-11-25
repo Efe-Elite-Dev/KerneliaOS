@@ -173,13 +173,39 @@ static int name_match(const uint8_t *pat, size_t pl, const char *host, size_t hl
     return eq_ci(pat, pl, h, hl);
 }
 
+int x509_ipv4_parse(const char *host, size_t hlen, uint8_t out[4]){
+    size_t i = 0;
+    for(int part = 0; part < 4; part++){
+        unsigned v = 0;
+        size_t digits = 0;
+        while(i < hlen && host[i] >= '0' && host[i] <= '9'){
+            v = v * 10 + (unsigned)(host[i] - '0');
+            if(v > 255 || ++digits > 3) return 0;
+            i++;
+        }
+        if(digits == 0) return 0;
+        out[part] = (uint8_t)v;
+        if(part < 3){
+            if(i >= hlen || host[i] != '.') return 0;
+            i++;
+        }
+    }
+    return i == hlen;
+}
+
 int x509_check_hostname(const x509_cert *c, const char *host, size_t hlen){
     if(!c->san || hlen == 0) return -1;
+    uint8_t ip[4];
+    int is_ip = x509_ipv4_parse(host, hlen, ip);
     cur g = {c->san, c->san_len};
     while(cur_peek(&g) >= 0){
         cur v; uint8_t t; const uint8_t *full; size_t flen;
         if(cur_next(&g, &t, &v, &full, &flen) != 0) return -1;
-        if(t == 0x82 && name_match(v.p, v.n, host, hlen)) return 0;  /* dNSName [2] */
+        if(is_ip){
+            if(t == 0x87 && bytes_eq(v.p, v.n, ip, 4)) return 0;     /* iPAddress [7] */
+        } else if(t == 0x82 && name_match(v.p, v.n, host, hlen)){     /* dNSName [2] */
+            return 0;
+        }
     }
     return -1;
 }

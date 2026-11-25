@@ -26,8 +26,11 @@ int x509_parse(x509_cert *c, const uint8_t *der, size_t len);
 /* child, issuer tarafindan imzalanmis mi? (issuer adi eslesmeli, imza dogrulanmali). Basarili 0. */
 int x509_verify_issuer(const x509_cert *child, const x509_cert *issuer);
 
-/* host, SAN dNSName girdilerinden biriyle eslesiyor mu? (*.ornek.com tek etiket esler).
-   SAN yoksa eslesme yoktur (CN'ye geri donulmez). Basarili 0. */
+/* host noktali IPv4 ise (a.b.c.d) 4 bayti out'a yazar ve 1 doner; degilse 0. */
+int x509_ipv4_parse(const char *host, size_t hlen, uint8_t out[4]);
+
+/* host, SAN girdilerinden biriyle eslesiyor mu? IP ise iPAddress, degilse dNSName
+   (*.ornek.com tek etiket esler). SAN yoksa eslesme yoktur (CN'ye geri donulmez). Basarili 0. */
 int x509_check_hostname(const x509_cert *c, const char *host, size_t hlen);
 
 #endif

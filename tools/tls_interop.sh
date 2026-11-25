@@ -14,7 +14,7 @@ openssl req -x509 -newkey rsa:2048 -nodes -keyout ca.key -out ca.pem \
     -subj "/CN=KerneliaTest CA" -days 3650 -sha256 -addext "basicConstraints=critical,CA:TRUE" 2>/dev/null
 openssl req -x509 -newkey rsa:2048 -nodes -keyout ca2.key -out ca2.pem \
     -subj "/CN=Other CA" -days 3650 -sha256 2>/dev/null
-printf 'subjectAltName=DNS:localhost\n' > san.cnf
+printf 'subjectAltName=DNS:localhost,IP:127.0.0.1\n' > san.cnf
 
 openssl req -newkey rsa:2048 -nodes -keyout rsa.key -out rsa.csr -subj "/CN=localhost" 2>/dev/null
 openssl x509 -req -in rsa.csr -CA ca.pem -CAkey ca.key -CAcreateserial \
@@ -54,6 +54,7 @@ run "RSA-PSS sunucu, dogru CA" ok 4443 ca.der localhost
 run "ECDSA P-256 sunucu, dogru CA" ok 4444 ca.der localhost
 run "RSA sunucu, yanlis CA reddedilmeli" fail 4443 ca2.der localhost
 run "ECDSA sunucu, yanlis CA reddedilmeli" fail 4444 ca2.der localhost
+run "IP litaral (SAN iPAddress) kabul" ok 4443 ca.der 127.0.0.1
 run "hostname uyusmazligi reddedilmeli" fail 4443 ca.der example.org
 
 exit $fail
