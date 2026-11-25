@@ -1552,6 +1552,9 @@ static void http_cmd(const char *arg){
     http_show();
 }
 
+/* HTTPS: TLS 1.3 istemcisi (app/https.c) */
+#include "app/https.c"
+
 
 /* ---- .wind calistirici: ATA diskinden FAT ile dosya okur, programi belleğe yukler,
    kernel API tablosunu verip giris noktasini cagirir ---- */
@@ -2131,6 +2134,7 @@ static void term_exec(void){
     else if(str_eq(cmd, "ping"))  ping_cmd(arg);
     else if(str_eq(cmd, "ses"))   ses_cmd(arg);
     else if(str_eq(cmd, "http"))  http_cmd(arg);
+    else if(str_eq(cmd, "https")) https_cmd(arg);
     else if(str_eq(cmd, "dns"))   dns_cmd(arg);
     else if(str_eq(cmd, "wind"))  wind_run(arg);
     else if(str_eq(cmd, "exe"))   exe_run(arg);

@@ -17,28 +17,28 @@ static void check(const char *name, int ok){
 
 int main(void){
     /* Egri sabitleri: n*G = O (G'nin mertebesi n). Sabitler hatali ise bu tutmaz. */
-    bn_ctx_init(&CP, FP, EL);
-    bn_ctx_init(&CN, FN, EL);
-    make_exp(EXP_P, FP);
-    make_exp(EXP_N, FN);
+    bn_ctx_init(&P256_CP, P256_P, EL);
+    bn_ctx_init(&P256_CN, P256_N, EL);
+    p256_mkexp(P256_EXPP, P256_P);
+    p256_mkexp(P256_EXPN, P256_N);
 
     ec_pt G, R;
-    cpy(G.x, GX); cpy(G.y, GY); G.inf = 0;
+    p256_cpy(G.x, P256_GX); p256_cpy(G.y, P256_GY); G.inf = 0;
     uint8_t nb[32];
-    bn_to_be(nb, 32, FN, EL);
-    pt_mul(&R, nb, &G);
+    bn_to_be(nb, 32, P256_N, EL);
+    p256_mul(&R, nb, &G);
     check("n*G = O", R.inf == 1);
 
     /* (n-1)*G = -G: x ayni, y = p - Gy */
     uint32_t nm1[EL];
-    cpy(nm1, FN);
+    p256_cpy(nm1, P256_N);
     nm1[0] -= 1;
     uint8_t nmb[32];
     bn_to_be(nmb, 32, nm1, EL);
-    pt_mul(&R, nmb, &G);
+    p256_mul(&R, nmb, &G);
     uint32_t zero[EL] = {0}, negy[EL];
-    bn_submod(negy, zero, GY, FP, EL);
-    check("(n-1)G = -G", !R.inf && eq(R.x, GX) && eq(R.y, negy));
+    bn_submod(negy, zero, P256_GY, P256_P, EL);
+    check("(n-1)G = -G", !R.inf && p256_eq(R.x, P256_GX) && p256_eq(R.y, negy));
 
     /* Gercek OpenSSL imzasi */
     uint8_t h[32];

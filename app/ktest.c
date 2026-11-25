@@ -41,6 +41,23 @@ static int kt_dns_fixture(unsigned char *m, unsigned cap, unsigned rcode){
     return (int)n;
 }
 
+#ifdef WIND_TLS_TEST
+/* Yerel sunucu (tools/qemu_test.sh): openssl s_server 4443. QEMU user-net'te 10.0.2.2 = ana makine. */
+static void kt_https(void){
+    if(!NIC_UP){ kt_check("https: ag karti var", 0); return; }
+    u32 ip = 0;
+    parse_ip("10.0.2.2", &ip);
+    long n = 0;
+    int r = https_fetch(ip, 4443, "10.0.2.2", 8, "/", &n);
+    int ok = (r == 0 && n > 12 && HTTPS_OUT[0] == 'H' && HTTPS_OUT[9] == '2');
+    kt_check("https: TLS 1.3 el sikisma + GET 200 (10.0.2.2:4443)", ok);
+    long n2 = 0;
+    int r2 = https_fetch(ip, 4443, "example.org", 11, "/", &n2);
+    kt_check("https: yanlis host reddedilir", r2 == -3);
+    if(ok && r2 == -3) ser_puts("HTTPS OK\n");
+}
+#endif
+
 static void kt_run(void){
     /* 1. Zamanlayici: birkac tick gecmeli (kesmeler calisiyor) */
     u32 t0 = TICKS;
@@ -83,6 +100,9 @@ static void kt_run(void){
     kt_check("kasitli basarisizlik (negatif test)", 0);
 #endif
 
+#ifdef WIND_TLS_TEST
+    kt_https();
+#endif
     ser_puts("WIND_TEST: gecen="); ser_dec(KT_PASS);
     ser_puts(" kalan="); ser_dec(KT_FAIL); ser_puts("\n");
 

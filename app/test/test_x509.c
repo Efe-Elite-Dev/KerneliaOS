@@ -58,6 +58,13 @@ int main(void){
     /* SAN'siz CA: CN'e geri donulmez */
     check("SAN yoksa eslesme yok", x509_check_hostname(&ca, "KerneliaTest CA", 15) == -1);
 
+    /* IPv4 litaral ayristirma */
+    uint8_t ipb[4];
+    check("ipv4 ayristirilir", x509_ipv4_parse("10.0.2.2", 8, ipb) == 1 && ipb[0] == 10 && ipb[3] == 2);
+    check("ipv4 asiri deger reddedilir", x509_ipv4_parse("10.0.2.256", 10, ipb) == 0);
+    check("ipv4 eksik parca reddedilir", x509_ipv4_parse("10.0.2", 6, ipb) == 0);
+    check("ipv4 olmayan ad", x509_ipv4_parse("example.test", 12, ipb) == 0);
+
     /* Bozuk DER */
     static const uint8_t junk[5] = {0x30, 0x03, 0x01, 0x01, 0x00};
     x509_cert jc;

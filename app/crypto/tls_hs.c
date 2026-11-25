@@ -138,13 +138,17 @@ static int hs_build_ch(tls_hs *s, const char *host, size_t hlen, const uint8_t e
 
     size_t ext_len_pos = p; p += 2;
     size_t ext_start = p;
-    /* server_name: list_len(2)=3+hlen, name_type 0, name_len(2)=hlen */
-    hs_put16(b + p, 0x0000); p += 2;
-    hs_put16(b + p, 5 + hlen); p += 2;
-    hs_put16(b + p, 3 + hlen); p += 2;
-    b[p++] = 0;
-    hs_put16(b + p, (uint32_t)hlen); p += 2;
-    hs_copy(b + p, (const uint8_t *)host, hlen); p += hlen;
+    /* server_name: list_len(2)=3+hlen, name_type 0, name_len(2)=hlen.
+       IP adresi icin SNI gonderilmez (RFC 6066). */
+    uint8_t ipv4[4];
+    if(!x509_ipv4_parse(host, hlen, ipv4)){
+        hs_put16(b + p, 0x0000); p += 2;
+        hs_put16(b + p, 5 + hlen); p += 2;
+        hs_put16(b + p, 3 + hlen); p += 2;
+        b[p++] = 0;
+        hs_put16(b + p, (uint32_t)hlen); p += 2;
+        hs_copy(b + p, (const uint8_t *)host, hlen); p += hlen;
+    }
     /* supported_versions: TLS 1.3 */
     hs_put16(b + p, 0x002B); p += 2; hs_put16(b + p, 3); p += 2; b[p++] = 2; hs_put16(b + p, 0x0304); p += 2;
     /* supported_groups: x25519 */
