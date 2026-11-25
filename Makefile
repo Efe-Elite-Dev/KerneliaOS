@@ -41,6 +41,7 @@ test:
 	gcc -std=c99 -Wall -Wextra -Werror -Wno-unused-function -o test_dns app/test/test_dns.c && ./test_dns
 	gcc -std=c99 -Wall -Wextra -Werror -Wno-unused-function -o test_crypto app/test/test_crypto.c && ./test_crypto
 	gcc -std=c99 -Wall -Wextra -Werror -Wno-unused-function -o test_x25519 app/test/test_x25519.c && ./test_x25519
+	gcc -std=c99 -Wall -Wextra -Werror -Wno-unused-function -o test_tls app/test/test_tls.c && ./test_tls
 
 clean:
 	rm -rf boot.o kernel.o kernel.bin iso kerneliaos.iso
