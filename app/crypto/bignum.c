@@ -1,5 +1,5 @@
 /* KerneliaOS buyuk sayi aritmetigi. Bkz. bignum.h.
-   Modüler üs alma Montgomery çarpımı (CIOS) ile yapılır. Saf C, libc yok. */
+   Modüler üs alma ve modüler çarpım Montgomery çarpımı (CIOS) ile yapılır. Saf C, libc yok. */
 #include "bignum.h"
 
 static int bn_cmp_raw(const uint32_t *a, const uint32_t *b, size_t len){
@@ -13,13 +13,23 @@ int bn_cmp(const uint32_t *a, const uint32_t *b, size_t len){
     return bn_cmp_raw(a, b, len);
 }
 
-/* r = a - b (mod 2^(32*len)). Sonuc a >= b ise gercek fark. */
+/* r = a - b (mod 2^(32*len)). Sonuc a >= b ise gercek fark. r ile a ayni olabilir. */
 static void bn_sub_raw(uint32_t *r, const uint32_t *a, const uint32_t *b, size_t len){
     uint64_t borrow = 0;
     for(size_t i = 0; i < len; i++){
         uint64_t d = (uint64_t)a[i] - b[i] - borrow;
         r[i] = (uint32_t)d;
         borrow = (d >> 63) & 1;   /* negatifse ust bit 1 olur */
+    }
+}
+
+/* r = a + b (mod 2^(32*len)); tasma dondurulur */
+static void bn_add_raw(uint32_t *r, const uint32_t *a, const uint32_t *b, size_t len){
+    uint64_t carry = 0;
+    for(size_t i = 0; i < len; i++){
+        uint64_t s = (uint64_t)a[i] + b[i] + carry;
+        r[i] = (uint32_t)s;
+        carry = s >> 32;
     }
 }
 
@@ -107,7 +117,7 @@ int bn_modexp(uint32_t *res, const uint32_t *base, const uint8_t *exp, size_t el
     for(size_t i = 0; i < len; i++){ one[i] = 0; r2[i] = 0; }
     one[0] = 1;
     if(bn_cmp_raw(base, m, len) >= 0) return -1;
-    /* m > 1 ve tek; m == 1 ise kosul bozulur */
+    /* m > 1 olmali */
     int m_is_one = (m[0] == 1);
     for(size_t i = 1; i < len && m_is_one; i++) if(m[i] != 0) m_is_one = 0;
     if(m_is_one) return -1;
@@ -128,4 +138,41 @@ int bn_modexp(uint32_t *res, const uint32_t *base, const uint8_t *exp, size_t el
     }
     mont_mul(res, acc, one, m, len, n0);     /* Montgomery'den cik */
     return 0;
+}
+
+int bn_ctx_init(bn_ctx *c, const uint32_t *m, size_t len){
+    if(len == 0 || len > BN_MAXLEN) return -1;
+    if((m[0] & 1u) == 0) return -1;
+    c->len = len;
+    for(size_t i = 0; i < len; i++){ c->m[i] = m[i]; c->r2[i] = 0; }
+    c->r2[0] = 1;
+    for(size_t i = 0; i < 64 * len; i++) bn_dbl_mod(c->r2, c->m, len);
+    c->n0 = mont_n0(m[0]);
+    return 0;
+}
+
+void bn_mulmod(const bn_ctx *c, uint32_t *r, const uint32_t *a, const uint32_t *b){
+    uint32_t t[BN_MAXLEN];
+    mont_mul(t, a, b, c->m, c->len, c->n0);          /* a*b*R^-1 */
+    mont_mul(r, t, c->r2, c->m, c->len, c->n0);      /* *R^2*R^-1 = a*b */
+}
+
+void bn_addmod(uint32_t *r, const uint32_t *a, const uint32_t *b, const uint32_t *m, size_t len){
+    uint32_t t[BN_MAXLEN];
+    uint64_t carry = 0;
+    for(size_t i = 0; i < len; i++){
+        uint64_t s = (uint64_t)a[i] + b[i] + carry;
+        t[i] = (uint32_t)s;
+        carry = s >> 32;
+    }
+    /* tasma varsa ya da t >= m ise bir kez m cikar */
+    if(carry || bn_cmp_raw(t, m, len) >= 0) bn_sub_raw(t, t, m, len);
+    for(size_t i = 0; i < len; i++) r[i] = t[i];
+}
+
+void bn_submod(uint32_t *r, const uint32_t *a, const uint32_t *b, const uint32_t *m, size_t len){
+    uint32_t t[BN_MAXLEN];
+    bn_sub_raw(t, a, b, len);
+    if(bn_cmp_raw(a, b, len) < 0) bn_add_raw(t, t, m, len);   /* a < b: m ekle */
+    for(size_t i = 0; i < len; i++) r[i] = t[i];
 }
